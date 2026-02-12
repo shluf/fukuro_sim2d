@@ -98,11 +98,11 @@ class FrameConverter:
         return int(round(abs(length_m) * self.scale))
 
     def theta_world_to_screen(self, theta: float) -> float:
-        """Konversi sudut world (CCW positif) ke screen (CW positif untuk drawing).
+        """Konversi sudut world ke screen untuk rendering.
 
-        Pygame mengukur sudut CW dari +X screen, jadi cukup negate.
+        Theta sudah di-adjust di physics layer untuk matching dengan screen coordinates.
         """
-        return -theta
+        return theta
 
     # ------------------------------------------------------------------
     # Screen → World

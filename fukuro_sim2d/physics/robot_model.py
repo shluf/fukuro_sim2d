@@ -24,7 +24,8 @@ class RobotModel:
     def __init__(self, x: float, y: float, theta: float,
                  radius: float = 0.2,
                  wheel_R: float = 0.5, wheel_r: float = 0.05,
-                 wheel_angles_deg: list[float] | None = None):
+                 wheel_angles_deg: list[float] | None = None,
+                 mass: float = 20.0, friction: float = 0.95):
         """
         Parameters
         ----------
@@ -40,6 +41,10 @@ class RobotModel:
             Radius roda (meter).
         wheel_angles_deg : list[float] | None
             Sudut mounting roda (derajat). Default [0, 120, 240].
+        mass : float
+            Massa robot (kg), untuk collision physics.
+        friction : float
+            Koefisien redam per frame (0–1). Setiap frame: velocity *= friction.
         """
         # --- State ---
         self.x = x
@@ -53,6 +58,8 @@ class RobotModel:
 
         # --- Physical properties ---
         self.radius = radius
+        self.mass = mass
+        self.friction = friction
 
         # --- Kinematics ---
         self.kinematics = Omni3Kinematics(wheel_R, wheel_r, wheel_angles_deg)
@@ -89,7 +96,12 @@ class RobotModel:
         # Global displacement
         self.x += (self.vx * cos_th - self.vy * sin_th) * Ts
         self.y += (self.vx * sin_th + self.vy * cos_th) * Ts
-        self.theta += self.omega * Ts
+        self.theta -= self.omega * Ts  # Negate untuk matching screen coordinate
+
+        # Apply friction decay to velocity
+        self.vx *= self.friction
+        self.vy *= self.friction
+        self.omega *= self.friction
 
         # Normalize theta ke [0, 2π)
         self.theta = self.theta % (2 * math.pi)

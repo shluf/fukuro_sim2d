@@ -64,8 +64,8 @@ class RegionalFieldConfig:
     corner_right_position: tuple[float, float] = (0.12, 0.12)
 
     # Posisi awal robot (world meter)
-    robot1_start: tuple[float, float, float] = (7.7, 4.375, 3.14159)       # x, y, theta
-    robot2_start: tuple[float, float, float] = (0.3, 4.375, 0.0)
+    robot1_start: tuple[float, float, float] = (0.3, 4.375, 0.0)       # x, y, theta
+    robot2_start: tuple[float, float, float] = (7.7, 4.375, 3.14159)
 
 
 @dataclass

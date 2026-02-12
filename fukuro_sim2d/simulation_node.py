@@ -545,38 +545,48 @@ class SimulationNode(Node):
         if dvn >= 0:
             return
         
-        # Separate overlapping objects
+        # Get masses
+        m1 = getattr(obj1, 'mass', 1.0)
+        m2 = getattr(obj2, 'mass', 1.0)
+        total_mass = m1 + m2
+        
+        # Separate overlapping objects (weighted by mass)
         overlap = (r1 + r2) - dist
         if overlap > 0:
-            separation = overlap / 2.0
-            obj1.x -= nx * separation
-            obj1.y -= ny * separation
-            obj2.x += nx * separation
-            obj2.y += ny * separation
+            sep1 = overlap * (m2 / total_mass)
+            sep2 = overlap * (m1 / total_mass)
+            obj1.x -= nx * sep1
+            obj1.y -= ny * sep1
+            obj2.x += nx * sep2
+            obj2.y += ny * sep2
         
-        # Apply impulse
-        impulse = -(1 + elasticity) * dvn / 2.0
+        # Apply impulse (considering mass)
+        impulse = -(1 + elasticity) * dvn / (1.0/m1 + 1.0/m2)
+        
+        # Get masses
+        m1 = getattr(obj1, 'mass', 1.0)
+        m2 = getattr(obj2, 'mass', 1.0)
         
         # Update velocities
         if isinstance(obj1, BallModel):
-            v1x -= impulse * nx
-            v1y -= impulse * ny
+            v1x -= (impulse / m1) * nx
+            v1y -= (impulse / m1) * ny
             obj1.speed = math.hypot(v1x, v1y)
             if obj1.speed > 1e-6:
                 obj1.angle = math.atan2(v1y, v1x)
         else:
-            obj1.vx -= impulse * nx
-            obj1.vy -= impulse * ny
+            obj1.vx -= (impulse / m1) * nx
+            obj1.vy -= (impulse / m1) * ny
         
         if isinstance(obj2, BallModel):
-            v2x += impulse * nx
-            v2y += impulse * ny
+            v2x += (impulse / m2) * nx
+            v2y += (impulse / m2) * ny
             obj2.speed = math.hypot(v2x, v2y)
             if obj2.speed > 1e-6:
                 obj2.angle = math.atan2(v2y, v2x)
         else:
-            obj2.vx += impulse * nx
-            obj2.vy += impulse * ny
+            obj2.vx += (impulse / m2) * nx
+            obj2.vy += (impulse / m2) * ny
 
     def _check_rect_collision(self, cx: float, cy: float, cr: float,
                              rx: float, ry: float, rw: float, rh: float) -> bool:

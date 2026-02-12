@@ -17,7 +17,7 @@ class BallModel:
     """Physics model untuk bola."""
 
     def __init__(self, x: float, y: float, radius: float = 0.12,
-                 friction: float = 0.98, min_speed: float = 0.01):
+                 friction: float = 0.98, min_speed: float = 0.01, mass: float = 0.5):
         """
         Parameters
         ----------
@@ -29,6 +29,8 @@ class BallModel:
             Koefisien redam per frame (0–1). Setiap frame: speed *= friction.
         min_speed : float
             Kecepatan di bawah ini dianggap 0.
+        mass : float
+            Massa bola (kg), untuk collision physics.
         """
         self.x = x
         self.y = y
@@ -39,6 +41,7 @@ class BallModel:
 
         self.friction = friction
         self.min_speed = min_speed
+        self.mass = mass
 
     # ------------------------------------------------------------------
 
