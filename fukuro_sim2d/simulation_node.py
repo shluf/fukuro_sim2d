@@ -16,10 +16,11 @@ import rclpy
 from rclpy.node import Node
 from rclpy.callback_groups import ReentrantCallbackGroup
 from geometry_msgs.msg import Twist, Pose2D
-from std_msgs.msg import String, Bool
+from std_msgs.msg import Bool
 
 from fukuro_interface.msg import WorldState, StrategyState, Robot as RobotMsg, Obstacle
 from fukuro_interface.srv import DribblerControl, KickService, SetReady
+from cob_srvs.srv import SetString
 
 from fukuro_sim2d.physics.robot_model import RobotModel
 from fukuro_sim2d.physics.ball_model import BallModel
@@ -237,8 +238,13 @@ class SimulationNode(Node):
 
         # Strategy subscriber
         self.strategy_sub = self.create_subscription(
-            StrategyState, '/strategy/goal',
+            StrategyState, '/fukuro/strategy/goal',
             self._strategy_callback, 10,
+            callback_group=self.callback_group)
+
+        # Strategy change service client
+        self.strategy_change_client = self.create_client(
+            SetString, '/fukuro/strategy/change',
             callback_group=self.callback_group)
 
         # Renderer
@@ -709,16 +715,21 @@ class SimulationNode(Node):
                                                 elasticity=0.6)
 
     # ------------------------------------------------------------------
-    # Strategy change publisher
+    # Strategy change service client
     # ------------------------------------------------------------------
 
     def _send_strategy_change(self, mode_name: str):
-        pub = self.create_publisher(String, '/strategy/change', 10)
-        msg = String()
-        msg.data = json.dumps({"mode": mode_name})
-        pub.publish(msg)
-        self.get_logger().info(f"Strategy → {mode_name}")
-        self.destroy_publisher(pub)
+        if not self.strategy_change_client.wait_for_service(timeout_sec=1.0):
+            self.get_logger().warn("Strategy change service not available")
+            return
+        
+        req = SetString.Request()
+        req.data = json.dumps({"mode": mode_name})
+        
+        future = self.strategy_change_client.call_async(req)
+        future.add_done_callback(
+            lambda f: self.get_logger().info(
+                f"Strategy → {mode_name}: {'success' if f.result().success else 'failed'}"))
 
     # ------------------------------------------------------------------
     # Obstacle management
