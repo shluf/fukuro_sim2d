@@ -132,6 +132,9 @@ class Renderer:
             self._draw_regional_field()
         else:
             self._draw_nasional_field()
+        
+        # Debug: tampilkan margin boundary
+        # self.draw_margin_debug()
 
     def draw_robot(self, robot: RobotModel, label: str = "Robot",
                    color: tuple = COLOR_ROBOT_BODY,
@@ -384,6 +387,53 @@ class Renderer:
                 pygame.draw.rect(self.screen, COLOR_OBSTACLE, rect)
 
     # ==================================================================
+    # Debug visualization
+    # ==================================================================
+
+    def draw_margin_debug(self):
+        """Gambar garis batas margin untuk debugging."""
+        fc = self.fc
+        f = self.field
+        
+        # Warna untuk garis debug
+        COLOR_MARGIN = (255, 0, 255)  # Magenta untuk margin
+        
+        if self.mode == SimMode.REGIONAL:  
+            # Outer margin boundary - hitung dari koordinat screen langsung
+            # Field dalam screen pixel
+            field_tl_screen = fc.world_to_screen(0, 0)
+            field_br_screen = fc.world_to_screen(f.width, f.length)
+            
+            # Margin dalam pixel
+            margin_x_px = fc.margin_screen_x * fc.scale
+            margin_y_px = fc.margin_screen_y * fc.scale
+            
+            # Outer rectangle dengan margin
+            outer_x = field_tl_screen[0] - margin_x_px
+            outer_y = field_tl_screen[1] - margin_y_px
+            outer_w = (field_br_screen[0] - field_tl_screen[0]) + 2 * margin_x_px
+            outer_h = (field_br_screen[1] - field_tl_screen[1]) + 2 * margin_y_px
+            
+            pygame.draw.rect(self.screen, COLOR_MARGIN, 
+                           (int(outer_x), int(outer_y), int(outer_w), int(outer_h)), 4)
+            
+        else:
+            # Outer margin - dari screen pixel langsung
+            field_tl_screen = fc.world_to_screen(0, f.width)
+            field_br_screen = fc.world_to_screen(f.length, 0)
+            
+            margin_x_px = fc.margin_screen_x * fc.scale
+            margin_y_px = fc.margin_screen_y * fc.scale
+            
+            outer_x = field_tl_screen[0] - margin_x_px
+            outer_y = field_tl_screen[1] - margin_y_px
+            outer_w = (field_br_screen[0] - field_tl_screen[0]) + 2 * margin_x_px
+            outer_h = (field_br_screen[1] - field_tl_screen[1]) + 2 * margin_y_px
+            
+            pygame.draw.rect(self.screen, COLOR_MARGIN,
+                           (int(outer_x), int(outer_y), int(outer_w), int(outer_h)), 2)
+
+    # ==================================================================
     # Regional field drawing
     # ==================================================================
 
@@ -391,8 +441,8 @@ class Renderer:
         fc = self.fc
         f: RegionalFieldConfig = self.field
 
-        # Border
-        rect = fc.world_rect_to_screen(0, 0, f.length, f.width)
+        # Border - swap width dan length karena world_rect_to_screen akan swap lagi
+        rect = fc.world_rect_to_screen(0, 0, f.width, f.length)
         pygame.draw.rect(self.screen, COLOR_LINE, rect, 5)
 
         # Penalty area
@@ -407,9 +457,9 @@ class Renderer:
             f.center_area_w, f.center_area_h)
         pygame.draw.rect(self.screen, COLOR_PENALTY, rect_c, 4)
 
-        # Goal line
-        gl1 = fc.world_to_screen(f.goal_line_x1, f.goal_line_y)
-        gl2 = fc.world_to_screen(f.goal_line_x2, f.goal_line_y)
+        # Goal line - horizontal line di X=0, Y dari 3 sampai 5
+        gl1 = fc.world_to_screen(f.goal_line_x, f.goal_line_y1)
+        gl2 = fc.world_to_screen(f.goal_line_x, f.goal_line_y2)
         pygame.draw.line(self.screen, COLOR_GOAL_LINE, gl1, gl2, 12)
 
         # Goal posts

@@ -96,7 +96,7 @@ class RobotModel:
         # Global displacement
         self.x += (self.vx * cos_th - self.vy * sin_th) * Ts
         self.y += (self.vx * sin_th + self.vy * cos_th) * Ts
-        self.theta -= self.omega * Ts  # Negate untuk matching screen coordinate
+        self.theta += self.omega * Ts  # CCW positif (standar ROS)
 
         # Apply friction decay to velocity
         self.vx *= self.friction

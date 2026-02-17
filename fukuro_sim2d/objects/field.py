@@ -2,11 +2,11 @@
 field.py — Definisi dimensi dan elemen lapangan dalam world frame (meter).
 
 Mendukung dua mode kompetisi:
-  - REGIONAL : setengah lapangan 8m × 6m, obstacle, gawang di bawah (Y=6)
+  - REGIONAL : setengah lapangan 8m × 6m, obstacle, gawang di kanan (X=6)
   - NASIONAL : lapangan penuh 12m × 8m, gawang kiri & kanan, robot lawan
 
 Semua koordinat world frame:
-    REGIONAL : Origin (0, 0) = pojok kiri atas, X → kanan, Y → bawah
+    REGIONAL : Origin (0, 0) = pojok kiri atas, X → bawah, Y → kanan
     NASIONAL : Origin (0, 0) = pojok kiri bawah, X → kanan, Y → atas
 """
 
@@ -25,47 +25,47 @@ class SimMode(Enum):
 
 @dataclass
 class RegionalFieldConfig:
-    """Konfigurasi lapangan regional (8m × 6m, gawang di bawah → Y=6)."""
+    """Konfigurasi lapangan regional (8m × 6m, gawang di atas → Y=8)."""
 
-    length: float = 8.0
-    width: float = 6.0
+    length: float = 8.0  # horizontal (Y direction)
+    width: float = 6.0   # vertical (X direction)
 
-    # Area penalti (bawah): x=[2,6], y=[4.5,6.0]
-    penalty_area_x: float = 2.0
-    penalty_area_w: float = 4.0
-    penalty_area_y: float = 0.0
-    penalty_area_h: float = 1.5
+    # Area penalti (kanan): x=[0,1.5], y=[2,6]
+    penalty_area_x: float = 0.0
+    penalty_area_w: float = 1.5
+    penalty_area_y: float = 2.0
+    penalty_area_h: float = 4.0
 
-    # Area tengah: x=[3,5], y=[0,4.5]
-    center_area_x: float = 3.0
-    center_area_w: float = 2.0
-    center_area_y: float = 1.5
-    center_area_h: float = 4.5
+    # Area tengah: x=[1.5,6], y=[3,5]
+    center_area_x: float = 1.5
+    center_area_w: float = 4.5
+    center_area_y: float = 3.0
+    center_area_h: float = 2.0
 
-    # Goal line (bawah): x=[3,5], y=6.0
-    goal_line_x1: float = 3.0
-    goal_line_x2: float = 5.0
-    goal_line_y: float = 0.0
+    # Goal line (atas): y=[3,5], x=0.0
+    goal_line_y1: float = 3.0
+    goal_line_y2: float = 5.0
+    goal_line_x: float = 0.0
 
     # Goal posts
-    goal_post_left: tuple[float, float] = (4.4, 0.0)
-    goal_post_right: tuple[float, float] = (3.6, 0.0)
+    goal_post_left: tuple[float, float] = (3.6, 0.0)
+    goal_post_right: tuple[float, float] = (4.4, 0.0)
 
     # Corner boxes
-    corner_box_right_x: float = 0.0
-    corner_box_right_y: float = 4.0
+    corner_box_right_x: float = 4.0
+    corner_box_right_y: float = 0.0
     corner_box_size: float = 0.75
-    corner_box_left_x: float = 7.25
-    corner_box_left_y: float = 4.0
+    corner_box_left_x: float = 4.0
+    corner_box_left_y: float = 7.25
 
     # Preset ball positions
-    kickoff_position: tuple[float, float] = (4.0, 6.0)
-    corner_left_position: tuple[float, float] = (7.88, 0.12)
+    kickoff_position: tuple[float, float] = (6.0, 4.0)
+    corner_left_position: tuple[float, float] = (0.12, 7.88)
     corner_right_position: tuple[float, float] = (0.12, 0.12)
 
     # Posisi awal robot (world meter)
-    robot1_start: tuple[float, float, float] = (0.3, 4.375, 0.0)       # x, y, theta
-    robot2_start: tuple[float, float, float] = (7.7, 4.375, 3.14159)
+    robot1_start: tuple[float, float, float] = (4.375, 0.3, 1.5708)       # x, y, theta (90 deg = ke kanan)
+    robot2_start: tuple[float, float, float] = (4.375, 7.7, -1.5708)
 
 
 @dataclass
@@ -75,17 +75,17 @@ class RegionalObstacleConfig:
     size: float = 0.4
 
     positions: list[tuple[float, float]] = field(default_factory=lambda: [
-        (6.0, 2.2),
-        (6.0, 3.4),
-        (6.0, 4.6),
-        (4.0, 2.2),
-        (4.0, 3.4),
-        (2.0, 2.2),
-        (2.0, 3.4),
-        (2.0, 4.6),
-        (4.8, 0.0),
-        (3.2, 0.0),
-        (4.0, 0.0),
+        (2.2, 6.0),
+        (3.4, 6.0),
+        (4.6, 6.0),
+        (2.2, 4.0),
+        (3.4, 4.0),
+        (2.2, 2.0),
+        (3.4, 2.0),
+        (4.6, 2.0),
+        (0.0, 4.8),
+        (0.0, 3.2),
+        (0.0, 4.0),
     ])
 
 
