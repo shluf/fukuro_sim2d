@@ -403,24 +403,82 @@ class SimulationNode(Node):
 
         ball_gripped = False
 
-        # Check dribbler grip
-        for agent in agents:
-            m = agent.model
-            if m.dribbler_active:
-                dist = math.hypot(m.x - self.ball.x, m.y - self.ball.y)
-                if dist < m.radius + self.ball.radius:
-                    self.ball.grip_to(m)
-                    m.is_gripped = True
-                    ball_gripped = True
-                    break
-
+        # Update ball first (if not gripped)
         if not ball_gripped:
             self.ball.update(Ts)
 
-        # Handle physics collisions
+        # Handle physics collisions BEFORE grip check
         self._handle_collisions()
 
+        # Check dribbler grip AFTER collision (bola sudah dekat & stabil)
+        for agent in agents:
+            m = agent.model
+            if m.dribbler_active:
+                # Hitung posisi bola relatif terhadap robot
+                dx = self.ball.x - m.x
+                dy = self.ball.y - m.y
+                dist = math.hypot(dx, dy)
+                
+                # Cek jarak center-to-center
+                if dist < m.radius + self.ball.radius + 0.03:  # Tambah toleransi
+                    # Cek apakah bola di depan robot (dalam "mulut" dribbler)
+                    cos_th = math.cos(m.theta)
+                    sin_th = math.sin(m.theta)
+                    # Transform bola ke robot frame
+                    forward = dx * cos_th + dy * sin_th  # X robot (maju)
+                    lateral = -dx * sin_th + dy * cos_th  # Y robot (lateral)
+                    
+                    # Bola harus di depan (forward > 0) dan tidak terlalu samping
+                    if forward > 0 and abs(lateral) < m.radius * 0.8:
+                        self.ball.grip_to(m)
+                        m.is_gripped = True
+                        ball_gripped = True
+                        break
+
+        # Check for goals (update scoreboard)
+        self._check_goals()
+
         self._publish_world_states()
+
+    # ------------------------------------------------------------------
+    # Goal detection
+    # ------------------------------------------------------------------
+
+    def _check_goals(self):
+        """Cek apakah bola melewati gawang dan update scoreboard."""
+        bx, by = self.ball.x, self.ball.y
+        
+        if self.mode == SimMode.REGIONAL:
+            # Regional: hanya team score, gawang di X=0 (kiri), Y antara 3-5
+            f = self.field_cfg
+            if bx < -0.1:  # Bola melewati garis gawang
+                if f.goal_line_y1 <= by <= f.goal_line_y2:
+                    # Goal!
+                    self.renderer.team_score += 1
+                    self.get_logger().info(f"GOAL! Team score: {self.renderer.team_score}")
+                    # Reset bola ke kickoff
+                    self.ball.set_position(*f.kickoff_position)
+        
+        else:  # NASIONAL
+            # Nasional: team vs enemy
+            # Team gawang di x=0, enemy gawang di x=12
+            f = self.field_cfg
+            
+            # Team mencetak gol (bola masuk gawang enemy di x=12)
+            if bx > f.length + 0.1:
+                if f.goal_right_line_y1 <= by <= f.goal_right_line_y2:
+                    self.renderer.team_score += 1
+                    self.get_logger().info(
+                        f"GOAL! Team scores! {self.renderer.team_score} - {self.renderer.enemy_score}")
+                    self.ball.set_position(*f.kickoff_position)
+            
+            # Enemy mencetak gol (bola masuk gawang team di x=0)
+            elif bx < -0.1:
+                if f.goal_left_line_y1 <= by <= f.goal_left_line_y2:
+                    self.renderer.enemy_score += 1
+                    self.get_logger().info(
+                        f"GOAL! Enemy scores! {self.renderer.team_score} - {self.renderer.enemy_score}")
+                    self.ball.set_position(*f.kickoff_position)
 
     # ------------------------------------------------------------------
     # World state publisher
@@ -685,9 +743,29 @@ class SimulationNode(Node):
             for robot in all_robots:
                 if self._check_circle_collision(robot.x, robot.y, robot.radius,
                                                self.ball.x, self.ball.y, self.ball.radius):
-                    self._resolve_circle_collision(robot, self.ball,
-                                                  robot.radius, self.ball.radius,
-                                                  elasticity=0.7)
+                    # Cek apakah robot memiliki dribbler aktif dan bola di depan
+                    # Jika ya, kurangi elasticity drastis (bola "masuk" ke mulut robot)
+                    dx = self.ball.x - robot.x
+                    dy = self.ball.y - robot.y
+                    cos_th = math.cos(robot.theta)
+                    sin_th = math.sin(robot.theta)
+                    forward = dx * cos_th + dy * sin_th
+                    lateral = -dx * sin_th + dy * cos_th
+                    
+                    # Jika robot adalah ally dengan dribbler aktif DAN bola di depan
+                    is_front_collision = forward > 0 and abs(lateral) < robot.radius * 0.9
+                    has_dribbler = hasattr(robot, 'dribbler_active') and robot.dribbler_active
+                    
+                    if has_dribbler and is_front_collision:
+                        # Collision sangat lembut (cekung) - bola "tertahan" di depan
+                        self._resolve_circle_collision(robot, self.ball,
+                                                      robot.radius, self.ball.radius,
+                                                      elasticity=0.05)  # Hampir tidak memantul
+                    else:
+                        # Collision normal untuk sisi/belakang robot atau robot tanpa dribbler
+                        self._resolve_circle_collision(robot, self.ball,
+                                                      robot.radius, self.ball.radius,
+                                                      elasticity=0.5)
         
         # Robot-Obstacle and Ball-Obstacle collisions
         for obs in self.custom_obstacles:
@@ -811,23 +889,50 @@ class SimulationNode(Node):
                             input_text = ""
 
                 elif event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
+                    # Cek scoreboard reset button
+                    if renderer.check_scoreboard_reset_click(event.pos):
+                        renderer.reset_scoreboard()
+                        self.get_logger().info("Scoreboard reset")
                     # Cek klik tombol mode
-                    new_mode = renderer.check_mode_button_click(event.pos)
-                    if new_mode is not None:
-                        self.switch_mode(new_mode)
                     else:
-                        # Cek obstacle checkbox clicks
-                        clicked_obs_idx = renderer.check_obstacle_checkbox_click(
-                            event.pos, self.custom_obstacles)
-                        if clicked_obs_idx is not None:
-                            obs = self.custom_obstacles[clicked_obs_idx]
-                            obs.enabled = not obs.enabled
+                        new_mode = renderer.check_mode_button_click(event.pos)
+                        if new_mode is not None:
+                            self.switch_mode(new_mode)
+                        # Cek wheel speed toggle
+                        elif renderer.check_wheel_speed_toggle_click(event.pos):
+                            renderer.show_wheel_speeds = not renderer.show_wheel_speeds
+                        # Cek obstacle coords toggle
+                        elif renderer.check_obs_coords_toggle_click(event.pos):
+                            renderer.show_obstacle_coords = not renderer.show_obstacle_coords
+                        # Cek add obstacle button
+                        elif renderer.check_add_obstacle_click(event.pos):
+                            input_mode = True
+                            input_text = ""
                         else:
-                            # Cek drag
-                            wx, wy = renderer.fc.screen_to_world(*event.pos)
-                            dragging_obstacle = self._find_obstacle_at(wx, wy)
-                            if dragging_obstacle is None:
-                                dragging_enemy = self._find_enemy_at(wx, wy)
+                            # Cek obstacle delete button clicks
+                            del_idx = renderer.check_obstacle_delete_click(event.pos)
+                            if del_idx is not None:
+                                if 0 <= del_idx < len(self.custom_obstacles):
+                                    removed = self.custom_obstacles.pop(del_idx)
+                                    self.get_logger().info(
+                                        f"Obstacle removed at ({removed.x:.2f}, {removed.y:.2f})")
+                            else:
+                                # Cek obstacle checkbox clicks
+                                clicked_obs_idx = renderer.check_obstacle_checkbox_click(
+                                    event.pos, self.custom_obstacles)
+                                if clicked_obs_idx is not None:
+                                    obs = self.custom_obstacles[clicked_obs_idx]
+                                    obs.enabled = not obs.enabled
+                                else:
+                                    # Cek drag
+                                    wx, wy = renderer.fc.screen_to_world(*event.pos)
+                                    dragging_obstacle = self._find_obstacle_at(wx, wy)
+                                    if dragging_obstacle is None:
+                                        dragging_enemy = self._find_enemy_at(wx, wy)
+                
+                elif event.type == pygame.MOUSEWHEEL:
+                    # Scroll sidebar
+                    renderer.handle_scroll(event.y)
 
                 elif event.type == pygame.MOUSEBUTTONUP and event.button == 1:
                     dragging_enemy = None
@@ -865,6 +970,9 @@ class SimulationNode(Node):
                 renderer.draw_robot(enemy.model, label=enemy.display_name,
                                     color=COLOR_ENEMY_BODY)
 
+            # ── Scoreboard ──
+            renderer.draw_scoreboard()
+
             # ── Sidebar ──
             ally_infos = []
             if self.mode == SimMode.NASIONAL:
@@ -876,16 +984,26 @@ class SimulationNode(Node):
             ball_info = {"x": self.ball.x, "y": self.ball.y, "speed": self.ball.speed}
 
             keybindings = [
-                "Z=kickoff  X=corner-L  C=corner-R",
-                "SPACE=kick R2  ENTER=kick R3",
-                "Q=stop R2  W=stop R3  E=stop R1",
-                "A=drib R2  S=drib R3  D=drib R1",
-                "O=add obstacle (input x,y)",
-                "DEL=remove last obstacle",
-                "1/2/0=strategy  BACKSPACE=quit",
+                "── Ball ──",
+                "Z:kickoff  X:corner-L  C:corner-R",
+                "",
+                "── Robot Actions ──",
+                "SPACE:kick R2  ENTER:kick R3",
+                "A:dribbler R2  S:dribbler R3",
+                "D:dribbler R1 (nasional)",
+                "",
+                "── Robot Control ──",
+                "Q:stop R2  W:stop R3  E:stop R1",
+                "",
+                "── Strategy ──",
+                "1:kickoff_kanan  2:kickoff_kiri",
+                "0:idle mode",
+                "",
+                "── Other ──",
+                "BACKSPACE:quit simulation",
             ]
             if self.mode == SimMode.NASIONAL:
-                keybindings.append("Drag enemies & obstacles")
+                keybindings.append("Mouse:drag enemies & obstacles")
 
             renderer.draw_sidebar(
                 mode=self.mode,

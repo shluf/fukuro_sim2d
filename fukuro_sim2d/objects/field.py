@@ -47,10 +47,6 @@ class RegionalFieldConfig:
     goal_line_y2: float = 5.0
     goal_line_x: float = 0.0
 
-    # Goal posts
-    goal_post_left: tuple[float, float] = (3.6, 0.0)
-    goal_post_right: tuple[float, float] = (4.4, 0.0)
-
     # Corner boxes
     corner_box_right_x: float = 4.0
     corner_box_right_y: float = 0.0
