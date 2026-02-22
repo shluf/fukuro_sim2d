@@ -161,18 +161,38 @@ class RobotAgent:
         self.current_strategy = strategy
         self.current_state = state
 
-    def info_dict(self) -> dict:
+    def info_dict(self, ball_x: float = 0.0, ball_y: float = 0.0) -> dict:
         m = self.model
+        
+        # Calculate ball in robot frame
+        dx = ball_x - m.x
+        dy = ball_y - m.y
+        cos_th = math.cos(m.theta)
+        sin_th = math.sin(m.theta)
+        ball_local_x = dx * cos_th + dy * sin_th
+        ball_local_y = -dx * sin_th + dy * cos_th
+        ball_local_dist = math.hypot(ball_local_x, ball_local_y)
+        ball_local_angle = math.atan2(ball_local_y, ball_local_x)
+
         return {
             "name": self.display_name,
+            "role": self.name, # e.g. "robot2"
             "x": m.x, "y": m.y, "theta": m.theta,
             "vx": m.vx, "vy": m.vy, "omega": m.omega,
+            "speed": math.hypot(m.vx, m.vy),
+            "radius": m.radius, "mass": m.mass, "friction": m.friction,
+            "omega_wheels": m.omega_wheels.tolist() if hasattr(m.omega_wheels, 'tolist') else list(m.omega_wheels),
+            "dribbler_active": m.dribbler_active,
+            "dribbler_pwm": m.dribbler_pwm,
+            "is_gripped": m.is_gripped,
+            "is_ready": m.is_ready,
+            "is_stopped": self.is_stopped,
             "strategy": self.current_strategy,
             "state": self.current_state,
-            "is_ready": m.is_ready,
-            "is_gripped": m.is_gripped,
-            "is_stopped": self.is_stopped,
-            "dribbler_pwm": m.dribbler_pwm,
+            "ball_local_x": ball_local_x,
+            "ball_local_y": ball_local_y,
+            "ball_local_dist": ball_local_dist,
+            "ball_local_angle": ball_local_angle,
         }
 
 
@@ -896,8 +916,16 @@ class SimulationNode(Node):
                     # Cek klik tombol mode
                     else:
                         new_mode = renderer.check_mode_button_click(event.pos)
+                        new_tab = renderer.check_tab_click(event.pos)
+                        robot_idx = renderer.check_robot_selector_click(event.pos)
+                        
                         if new_mode is not None:
                             self.switch_mode(new_mode)
+                        elif new_tab is not None:
+                            renderer.active_sidebar_tab = new_tab
+                            renderer.sidebar_scroll_offset = 0 # Reset scroll on tab change
+                        elif robot_idx is not None and renderer.active_sidebar_tab == "WORLDSTATE":
+                            renderer.selected_robot_worldstate = robot_idx
                         # Cek wheel speed toggle
                         elif renderer.check_wheel_speed_toggle_click(event.pos):
                             renderer.show_wheel_speeds = not renderer.show_wheel_speeds
@@ -976,9 +1004,9 @@ class SimulationNode(Node):
             # ── Sidebar ──
             ally_infos = []
             if self.mode == SimMode.NASIONAL:
-                ally_infos.append(self.agent1.info_dict())
-            ally_infos.append(self.agent2.info_dict())
-            ally_infos.append(self.agent3.info_dict())
+                ally_infos.append(self.agent1.info_dict(self.ball.x, self.ball.y))
+            ally_infos.append(self.agent2.info_dict(self.ball.x, self.ball.y))
+            ally_infos.append(self.agent3.info_dict(self.ball.x, self.ball.y))
 
             enemy_infos = [e.info_dict() for e in self.enemies]
             ball_info = {"x": self.ball.x, "y": self.ball.y, "speed": self.ball.speed}

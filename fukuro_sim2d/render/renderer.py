@@ -105,6 +105,9 @@ class Renderer:
         # Click-target rects (populated during draw_sidebar)
         self.btn_regional_rect         = pygame.Rect(0, 0, 0, 0)
         self.btn_nasional_rect         = pygame.Rect(0, 0, 0, 0)
+        self.btn_tab_overview_rect     = pygame.Rect(0, 0, 0, 0)
+        self.btn_tab_worldstate_rect   = pygame.Rect(0, 0, 0, 0)
+        self._robot_selector_rects     = []
         self._obstacle_checkbox_rects  = []
         self._obstacle_delete_rects    = []   # delete buttons per obstacle
         self.btn_add_obstacle_rect     = pygame.Rect(0, 0, 0, 0)
@@ -115,6 +118,10 @@ class Renderer:
         # Toggle states
         self.show_wheel_speeds         = False
         self.show_obstacle_coords      = False
+        
+        # Sidebar state
+        self.active_sidebar_tab        = "OVERVIEW"
+        self.selected_robot_worldstate = 0
         
         # Sidebar scroll
         self.sidebar_scroll_offset     = 0
@@ -352,162 +359,333 @@ class Renderer:
             ))
         y_logical += btn_h + 12
 
-        # ── Ball ─────────────────────────────────────────────────────
-        y_logical = self._sb_divider(y_logical, sb_x, sb_w, scroll_offset)
-        y_logical = self._sb_section_header(y_logical, sb_x + pad, "BALL", scroll_offset)
-        y_logical = self._sb_kv_row(y_logical, sb_x + pad, sb_x + rpad, "Position",
-                             f"({ball_info.get('x', 0):.2f},"
-                             f" {ball_info.get('y', 0):.2f})", scroll_offset=scroll_offset)
-        y_logical = self._sb_kv_row(y_logical, sb_x + pad, sb_x + rpad, "Speed",
-                             f"{ball_info.get('speed', 0):.2f} m/s", scroll_offset=scroll_offset)
-        y_logical += 4
+        # ── Tab switch buttons ───────────────────────────────────────
+        self.btn_tab_overview_rect = pygame.Rect(sb_x + pad, y_logical, btn_w, btn_h)
+        self.btn_tab_worldstate_rect = pygame.Rect(sb_x + pad + btn_w + btn_gap, y_logical, btn_w, btn_h)
 
-        # ── Ally robots ──────────────────────────────────────────────
-        for rinfo in ally_robots:
+        for rect_logical, lbl, active in (
+            (self.btn_tab_overview_rect, "OVERVIEW", self.active_sidebar_tab == "OVERVIEW"),
+            (self.btn_tab_worldstate_rect, "WORLDSTATE", self.active_sidebar_tab == "WORLDSTATE"),
+        ):
+            bg   = SB_BTN_REG_ACT  if active else SB_BTN_INACT
+            bord = SB_BTN_REG_ACT  if active else SB_BORDER
+            tc   = SB_TEXT         if active else SB_TEXT_DIM
+            rect_draw = pygame.Rect(rect_logical.x, rect_logical.y - scroll_offset,
+                                   rect_logical.w, rect_logical.h)
+            pygame.draw.rect(self.screen, bg,   rect_draw, border_radius=5)
+            pygame.draw.rect(self.screen, bord, rect_draw, 1, border_radius=5)
+            ts, ts_rect = self.font_btn.render(lbl, tc)
+            self.screen.blit(ts, (
+                rect_draw.x + (rect_draw.w - ts_rect.width)  // 2,
+                rect_draw.y + (rect_draw.h - ts_rect.height) // 2,
+            ))
+        y_logical += btn_h + 12
+
+        if self.active_sidebar_tab == "OVERVIEW":
+            # ── Ball ─────────────────────────────────────────────────────
             y_logical = self._sb_divider(y_logical, sb_x, sb_w, scroll_offset)
-            y_logical = self._sb_robot_card(y_logical, sb_x + pad, sb_x + rpad, rinfo, ally=True, scroll_offset=scroll_offset)
-
-        # ── Enemy robots ─────────────────────────────────────────────
-        for rinfo in enemy_robots:
-            y_logical = self._sb_divider(y_logical, sb_x, sb_w, scroll_offset)
-            y_logical = self._sb_robot_card(y_logical, sb_x + pad, sb_x + rpad, rinfo, ally=False, scroll_offset=scroll_offset)
-
-        # ── Toggles ───────────────────────────────────────────────
-        y_logical = self._sb_divider(y_logical, sb_x, sb_w, scroll_offset)
-        y_logical = self._sb_section_header(y_logical, sb_x + pad, "TOGGLES", scroll_offset)
-
-        # Wheel speed toggle
-        self.btn_wheel_speed_rect = pygame.Rect(sb_x + pad + 2, y_logical + 1, 13, 13)
-        ws_col = SB_GREEN if self.show_wheel_speeds else SB_BTN_INACT
-        # Draw with offset
-        rect_draw = pygame.Rect(self.btn_wheel_speed_rect.x, self.btn_wheel_speed_rect.y - scroll_offset,
-                               self.btn_wheel_speed_rect.w, self.btn_wheel_speed_rect.h)
-        pygame.draw.rect(self.screen, ws_col, rect_draw, border_radius=2)
-        if self.show_wheel_speeds:
-            pygame.draw.line(self.screen, SB_BG,
-                             (rect_draw.x + 2, rect_draw.y + 6),
-                             (rect_draw.x + 5, rect_draw.y + 9), 2)
-            pygame.draw.line(self.screen, SB_BG,
-                             (rect_draw.x + 5, rect_draw.y + 9),
-                             (rect_draw.x + 11, rect_draw.y + 3), 2)
-        else:
-            pygame.draw.rect(self.screen, SB_BORDER, rect_draw, 1, border_radius=2)
-        ws_label, ws_label_rect = self.font_small.render("Wheel Speeds", SB_TEXT)
-        self.screen.blit(ws_label, (sb_x + pad + 22, y_logical - scroll_offset))
-        y_logical += 20
-
-        # Obstacle coords toggle
-        self.btn_obs_coords_rect = pygame.Rect(sb_x + pad + 2, y_logical + 1, 13, 13)
-        oc_col = SB_GREEN if self.show_obstacle_coords else SB_BTN_INACT
-        rect_draw = pygame.Rect(self.btn_obs_coords_rect.x, self.btn_obs_coords_rect.y - scroll_offset,
-                               self.btn_obs_coords_rect.w, self.btn_obs_coords_rect.h)
-        pygame.draw.rect(self.screen, oc_col, rect_draw, border_radius=2)
-        if self.show_obstacle_coords:
-            pygame.draw.line(self.screen, SB_BG,
-                             (rect_draw.x + 2, rect_draw.y + 6),
-                             (rect_draw.x + 5, rect_draw.y + 9), 2)
-            pygame.draw.line(self.screen, SB_BG,
-                             (rect_draw.x + 5, rect_draw.y + 9),
-                             (rect_draw.x + 11, rect_draw.y + 3), 2)
-        else:
-            pygame.draw.rect(self.screen, SB_BORDER, rect_draw, 1, border_radius=2)
-        oc_label, oc_label_rect = self.font_small.render("Obstacle Coords", SB_TEXT)
-        self.screen.blit(oc_label, (sb_x + pad + 22, y_logical - scroll_offset))
-        y_logical += 24
-
-        # ── Obstacles ────────────────────────────────────────────────
-        y_logical = self._sb_divider(y_logical, sb_x, sb_w, scroll_offset)
-        # Header row with section title and "+" add button
-        y_header_logical = y_logical
-        y_logical = self._sb_section_header(y_logical, sb_x + pad,
-                                     f"OBSTACLES  [{len(obstacles) if obstacles else 0}]",
-                                     scroll_offset)
-        # "+" button at right side of header
-        add_btn_size = 20
-        self.btn_add_obstacle_rect = pygame.Rect(
-            sb_x + rpad - add_btn_size, y_header_logical, add_btn_size, add_btn_size)
-        rect_draw = pygame.Rect(self.btn_add_obstacle_rect.x,
-                                self.btn_add_obstacle_rect.y - scroll_offset,
-                                add_btn_size, add_btn_size)
-        pygame.draw.rect(self.screen, SB_GREEN, rect_draw, border_radius=4)
-        plus_surf, plus_rect = self.font_btn.render("+", SB_BG)
-        self.screen.blit(plus_surf, (
-            rect_draw.x + (add_btn_size - plus_rect.width) // 2,
-            rect_draw.y + (add_btn_size - plus_rect.height) // 2,
-        ))
-
-        self._obstacle_checkbox_rects = []
-        self._obstacle_delete_rects = []
-        if obstacles:
-            for obs in obstacles:
-                # Checkbox - store logical coordinates
-                cb_rect_logical = pygame.Rect(sb_x + pad + 2, y_logical + 1, 13, 13)
-                self._obstacle_checkbox_rects.append(cb_rect_logical)
-                en_col = SB_GREEN if obs.enabled else SB_BTN_INACT
-                # Draw with offset
-                cb_rect_draw = pygame.Rect(cb_rect_logical.x, cb_rect_logical.y - scroll_offset,
-                                          cb_rect_logical.w, cb_rect_logical.h)
-                pygame.draw.rect(self.screen, en_col, cb_rect_draw, border_radius=2)
-                if obs.enabled:
-                    pygame.draw.line(self.screen, SB_BG,
-                                     (cb_rect_draw.x + 2,  cb_rect_draw.y + 6),
-                                     (cb_rect_draw.x + 5,  cb_rect_draw.y + 9), 2)
-                    pygame.draw.line(self.screen, SB_BG,
-                                     (cb_rect_draw.x + 5,  cb_rect_draw.y + 9),
-                                     (cb_rect_draw.x + 11, cb_rect_draw.y + 3), 2)
-                else:
-                    pygame.draw.rect(self.screen, SB_BORDER, cb_rect_draw, 1,
-                                     border_radius=2)
-                tc   = SB_TEXT if obs.enabled else SB_TEXT_DIM
-                lsrf, lsrf_rect = self.font_small.render(
-                    f"({obs.x:.1f}, {obs.y:.1f})", tc)
-                self.screen.blit(lsrf, (sb_x + pad + 22, y_logical - scroll_offset))
-
-                # Delete button ("x") at right side - store logical coordinates
-                del_rect_logical = pygame.Rect(sb_x + rpad - 16, y_logical, 15, 15)
-                self._obstacle_delete_rects.append(del_rect_logical)
-                # Draw with offset
-                del_rect_draw = pygame.Rect(del_rect_logical.x, del_rect_logical.y - scroll_offset,
-                                           del_rect_logical.w, del_rect_logical.h)
-                pygame.draw.rect(self.screen, SB_RED, del_rect_draw, border_radius=3)
-                x_surf, x_rect = self.font_label.render("x", SB_BG)
-                self.screen.blit(x_surf, (
-                    del_rect_draw.x + (del_rect_draw.w - x_rect.width) // 2,
-                    del_rect_draw.y + (del_rect_draw.h - x_rect.height) // 2,
-                ))
-                y_logical += 18
+            y_logical = self._sb_section_header(y_logical, sb_x + pad, "BALL", scroll_offset)
+            y_logical = self._sb_kv_row(y_logical, sb_x + pad, sb_x + rpad, "Position",
+                                 f"({ball_info.get('x', 0):.2f},"
+                                 f" {ball_info.get('y', 0):.2f})", scroll_offset=scroll_offset)
+            y_logical = self._sb_kv_row(y_logical, sb_x + pad, sb_x + rpad, "Speed",
+                                 f"{ball_info.get('speed', 0):.2f} m/s", scroll_offset=scroll_offset)
             y_logical += 4
-
-        # ── Coordinate input ─────────────────────────────────────────
-        if input_mode:
+    
+            # ── Ally robots ──────────────────────────────────────────────
+            for rinfo in ally_robots:
+                y_logical = self._sb_divider(y_logical, sb_x, sb_w, scroll_offset)
+                y_logical = self._sb_robot_card(y_logical, sb_x + pad, sb_x + rpad, rinfo, ally=True, scroll_offset=scroll_offset)
+    
+            # ── Enemy robots ─────────────────────────────────────────────
+            for rinfo in enemy_robots:
+                y_logical = self._sb_divider(y_logical, sb_x, sb_w, scroll_offset)
+                y_logical = self._sb_robot_card(y_logical, sb_x + pad, sb_x + rpad, rinfo, ally=False, scroll_offset=scroll_offset)
+    
+            # ── Toggles ───────────────────────────────────────────────
             y_logical = self._sb_divider(y_logical, sb_x, sb_w, scroll_offset)
-            y_logical = self._sb_section_header(y_logical, sb_x + pad, "COORDINATE INPUT", scroll_offset)
-            box_logical = pygame.Rect(sb_x + pad, y_logical, sb_w - 28, 26)
-            box_draw = pygame.Rect(box_logical.x, box_logical.y - scroll_offset,
-                                  box_logical.w, box_logical.h)
-            pygame.draw.rect(self.screen, SB_SURFACE, box_draw, border_radius=4)
-            pygame.draw.rect(self.screen, SB_ACCENT,  box_draw, 1, border_radius=4)
-            inp, inp_rect = self.font_small.render(input_text + "|", SB_TEXT)
-            self.screen.blit(inp, (box_draw.x + 6, box_draw.y + 5))
-            y_logical += 32
-
-        # ── Key bindings ─────────────────────────────────────────────
-        if extra_lines:
+            y_logical = self._sb_section_header(y_logical, sb_x + pad, "TOGGLES", scroll_offset)
+    
+            # Wheel speed toggle
+            self.btn_wheel_speed_rect = pygame.Rect(sb_x + pad + 2, y_logical + 1, 13, 13)
+            ws_col = SB_GREEN if self.show_wheel_speeds else SB_BTN_INACT
+            # Draw with offset
+            rect_draw = pygame.Rect(self.btn_wheel_speed_rect.x, self.btn_wheel_speed_rect.y - scroll_offset,
+                                   self.btn_wheel_speed_rect.w, self.btn_wheel_speed_rect.h)
+            pygame.draw.rect(self.screen, ws_col, rect_draw, border_radius=2)
+            if self.show_wheel_speeds:
+                pygame.draw.line(self.screen, SB_BG,
+                                 (rect_draw.x + 2, rect_draw.y + 6),
+                                 (rect_draw.x + 5, rect_draw.y + 9), 2)
+                pygame.draw.line(self.screen, SB_BG,
+                                 (rect_draw.x + 5, rect_draw.y + 9),
+                                 (rect_draw.x + 11, rect_draw.y + 3), 2)
+            else:
+                pygame.draw.rect(self.screen, SB_BORDER, rect_draw, 1, border_radius=2)
+            ws_label, ws_label_rect = self.font_small.render("Wheel Speeds", SB_TEXT)
+            self.screen.blit(ws_label, (sb_x + pad + 22, y_logical - scroll_offset))
+            y_logical += 20
+    
+            # Obstacle coords toggle
+            self.btn_obs_coords_rect = pygame.Rect(sb_x + pad + 2, y_logical + 1, 13, 13)
+            oc_col = SB_GREEN if self.show_obstacle_coords else SB_BTN_INACT
+            rect_draw = pygame.Rect(self.btn_obs_coords_rect.x, self.btn_obs_coords_rect.y - scroll_offset,
+                                   self.btn_obs_coords_rect.w, self.btn_obs_coords_rect.h)
+            pygame.draw.rect(self.screen, oc_col, rect_draw, border_radius=2)
+            if self.show_obstacle_coords:
+                pygame.draw.line(self.screen, SB_BG,
+                                 (rect_draw.x + 2, rect_draw.y + 6),
+                                 (rect_draw.x + 5, rect_draw.y + 9), 2)
+                pygame.draw.line(self.screen, SB_BG,
+                                 (rect_draw.x + 5, rect_draw.y + 9),
+                                 (rect_draw.x + 11, rect_draw.y + 3), 2)
+            else:
+                pygame.draw.rect(self.screen, SB_BORDER, rect_draw, 1, border_radius=2)
+            oc_label, oc_label_rect = self.font_small.render("Obstacle Coords", SB_TEXT)
+            self.screen.blit(oc_label, (sb_x + pad + 22, y_logical - scroll_offset))
+            y_logical += 24
+    
+            # ── Obstacles ────────────────────────────────────────────────
             y_logical = self._sb_divider(y_logical, sb_x, sb_w, scroll_offset)
-            y_logical = self._sb_section_header(y_logical, sb_x + pad, "CONTROLS", scroll_offset)
-            for line in extra_lines:
-                if ":" in line:
-                    key, desc = line.split(":", 1)
-                    ks, ks_rect = self.font_label.render(key + ":", SB_ACCENT)
-                    ds, ds_rect = self.font_label.render(desc, SB_TEXT_DIM)
-                    self.screen.blit(ks, (sb_x + pad, y_logical - scroll_offset))
-                    self.screen.blit(ds, (sb_x + pad + ks_rect.width + 4, y_logical - scroll_offset))
-                else:
-                    s, s_rect = self.font_label.render(line, SB_TEXT_DIM)
-                    self.screen.blit(s, (sb_x + pad, y_logical - scroll_offset))
-                y_logical += 15
-            y_logical += 4
-
+            # Header row with section title and "+" add button
+            y_header_logical = y_logical
+            y_logical = self._sb_section_header(y_logical, sb_x + pad,
+                                         f"OBSTACLES  [{len(obstacles) if obstacles else 0}]",
+                                         scroll_offset)
+            # "+" button at right side of header
+            add_btn_size = 20
+            self.btn_add_obstacle_rect = pygame.Rect(
+                sb_x + rpad - add_btn_size, y_header_logical, add_btn_size, add_btn_size)
+            rect_draw = pygame.Rect(self.btn_add_obstacle_rect.x,
+                                    self.btn_add_obstacle_rect.y - scroll_offset,
+                                    add_btn_size, add_btn_size)
+            pygame.draw.rect(self.screen, SB_GREEN, rect_draw, border_radius=4)
+            plus_surf, plus_rect = self.font_btn.render("+", SB_BG)
+            self.screen.blit(plus_surf, (
+                rect_draw.x + (add_btn_size - plus_rect.width) // 2,
+                rect_draw.y + (add_btn_size - plus_rect.height) // 2,
+            ))
+    
+            self._obstacle_checkbox_rects = []
+            self._obstacle_delete_rects = []
+            if obstacles:
+                for obs in obstacles:
+                    # Checkbox - store logical coordinates
+                    cb_rect_logical = pygame.Rect(sb_x + pad + 2, y_logical + 1, 13, 13)
+                    self._obstacle_checkbox_rects.append(cb_rect_logical)
+                    en_col = SB_GREEN if obs.enabled else SB_BTN_INACT
+                    # Draw with offset
+                    cb_rect_draw = pygame.Rect(cb_rect_logical.x, cb_rect_logical.y - scroll_offset,
+                                              cb_rect_logical.w, cb_rect_logical.h)
+                    pygame.draw.rect(self.screen, en_col, cb_rect_draw, border_radius=2)
+                    if obs.enabled:
+                        pygame.draw.line(self.screen, SB_BG,
+                                         (cb_rect_draw.x + 2,  cb_rect_draw.y + 6),
+                                         (cb_rect_draw.x + 5,  cb_rect_draw.y + 9), 2)
+                        pygame.draw.line(self.screen, SB_BG,
+                                         (cb_rect_draw.x + 5,  cb_rect_draw.y + 9),
+                                         (cb_rect_draw.x + 11, cb_rect_draw.y + 3), 2)
+                    else:
+                        pygame.draw.rect(self.screen, SB_BORDER, cb_rect_draw, 1,
+                                         border_radius=2)
+                    tc   = SB_TEXT if obs.enabled else SB_TEXT_DIM
+                    lsrf, lsrf_rect = self.font_small.render(
+                        f"({obs.x:.1f}, {obs.y:.1f})", tc)
+                    self.screen.blit(lsrf, (sb_x + pad + 22, y_logical - scroll_offset))
+    
+                    # Delete button ("x") at right side - store logical coordinates
+                    del_rect_logical = pygame.Rect(sb_x + rpad - 16, y_logical, 15, 15)
+                    self._obstacle_delete_rects.append(del_rect_logical)
+                    # Draw with offset
+                    del_rect_draw = pygame.Rect(del_rect_logical.x, del_rect_logical.y - scroll_offset,
+                                               del_rect_logical.w, del_rect_logical.h)
+                    pygame.draw.rect(self.screen, SB_RED, del_rect_draw, border_radius=3)
+                    x_surf, x_rect = self.font_label.render("x", SB_BG)
+                    self.screen.blit(x_surf, (
+                        del_rect_draw.x + (del_rect_draw.w - x_rect.width) // 2,
+                        del_rect_draw.y + (del_rect_draw.h - x_rect.height) // 2,
+                    ))
+                    y_logical += 18
+                y_logical += 4
+    
+            # ── Coordinate input ─────────────────────────────────────────
+            if input_mode:
+                y_logical = self._sb_divider(y_logical, sb_x, sb_w, scroll_offset)
+                y_logical = self._sb_section_header(y_logical, sb_x + pad, "COORDINATE INPUT", scroll_offset)
+                box_logical = pygame.Rect(sb_x + pad, y_logical, sb_w - 28, 26)
+                box_draw = pygame.Rect(box_logical.x, box_logical.y - scroll_offset,
+                                      box_logical.w, box_logical.h)
+                pygame.draw.rect(self.screen, SB_SURFACE, box_draw, border_radius=4)
+                pygame.draw.rect(self.screen, SB_ACCENT,  box_draw, 1, border_radius=4)
+                inp, inp_rect = self.font_small.render(input_text + "|", SB_TEXT)
+                self.screen.blit(inp, (box_draw.x + 6, box_draw.y + 5))
+                y_logical += 32
+    
+            # ── Key bindings ─────────────────────────────────────────────
+            if extra_lines:
+                y_logical = self._sb_divider(y_logical, sb_x, sb_w, scroll_offset)
+                y_logical = self._sb_section_header(y_logical, sb_x + pad, "CONTROLS", scroll_offset)
+                for line in extra_lines:
+                    if ":" in line:
+                        key, desc = line.split(":", 1)
+                        ks, ks_rect = self.font_label.render(key + ":", SB_ACCENT)
+                        ds, ds_rect = self.font_label.render(desc, SB_TEXT_DIM)
+                        self.screen.blit(ks, (sb_x + pad, y_logical - scroll_offset))
+                        self.screen.blit(ds, (sb_x + pad + ks_rect.width + 4, y_logical - scroll_offset))
+                    else:
+                        s, s_rect = self.font_label.render(line, SB_TEXT_DIM)
+                        self.screen.blit(s, (sb_x + pad, y_logical - scroll_offset))
+                    y_logical += 15
+                y_logical += 4
+        elif self.active_sidebar_tab == "WORLDSTATE":
+            # ── Robot Selector ───────────────────────────────────────────
+            y_logical = self._sb_divider(y_logical, sb_x, sb_w, scroll_offset)
+            y_logical = self._sb_section_header(y_logical, sb_x + pad, "SELECT ROBOT", scroll_offset)
+            
+            self._robot_selector_rects = []
+            num_robots = len(ally_robots)
+            if num_robots > 0:
+                sel_btn_gap = 8
+                sel_btn_w = (sb_w - 28 - sel_btn_gap * (num_robots - 1)) // num_robots
+                sel_btn_h = 26
+                
+                for i, rinfo in enumerate(ally_robots):
+                    rect_logical = pygame.Rect(sb_x + pad + i * (sel_btn_w + sel_btn_gap), y_logical, sel_btn_w, sel_btn_h)
+                    self._robot_selector_rects.append(rect_logical)
+                    
+                    active = (i == self.selected_robot_worldstate)
+                    bg   = SB_BTN_REG_ACT  if active else SB_BTN_INACT
+                    bord = SB_BTN_REG_ACT  if active else SB_BORDER
+                    tc   = SB_TEXT         if active else SB_TEXT_DIM
+                    
+                    rect_draw = pygame.Rect(rect_logical.x, rect_logical.y - scroll_offset,
+                                           rect_logical.w, rect_logical.h)
+                    pygame.draw.rect(self.screen, bg,   rect_draw, border_radius=4)
+                    pygame.draw.rect(self.screen, bord, rect_draw, 1, border_radius=4)
+                    
+                    lbl = rinfo.get('name', f"R{i+1}")
+                    ts, ts_rect = self.font_btn.render(lbl, tc)
+                    self.screen.blit(ts, (
+                        rect_draw.x + (rect_draw.w - ts_rect.width)  // 2,
+                        rect_draw.y + (rect_draw.h - ts_rect.height) // 2,
+                    ))
+                y_logical += sel_btn_h + 12
+                
+                # Ensure selected index is valid
+                if self.selected_robot_worldstate >= num_robots:
+                    self.selected_robot_worldstate = 0
+                    
+                rinfo = ally_robots[self.selected_robot_worldstate]
+                
+                # ── Pose ─────────────────────────────────────────────────────
+                y_logical = self._sb_divider(y_logical, sb_x, sb_w, scroll_offset)
+                y_logical = self._sb_section_header(y_logical, sb_x + pad, "POSE", scroll_offset)
+                y_logical = self._sb_kv_row(y_logical, sb_x + pad, sb_x + rpad, "X", f"{rinfo.get('x', 0):.3f} m", scroll_offset=scroll_offset)
+                y_logical = self._sb_kv_row(y_logical, sb_x + pad, sb_x + rpad, "Y", f"{rinfo.get('y', 0):.3f} m", scroll_offset=scroll_offset)
+                th = rinfo.get('theta', 0)
+                y_logical = self._sb_kv_row(y_logical, sb_x + pad, sb_x + rpad, "Theta", f"{th:.3f} rad ({math.degrees(th):.1f}°)", scroll_offset=scroll_offset)
+                y_logical += 4
+                
+                # ── Velocity ─────────────────────────────────────────────────
+                y_logical = self._sb_divider(y_logical, sb_x, sb_w, scroll_offset)
+                y_logical = self._sb_section_header(y_logical, sb_x + pad, "VELOCITY", scroll_offset)
+                y_logical = self._sb_kv_row(y_logical, sb_x + pad, sb_x + rpad, "Vx (Body)", f"{rinfo.get('vx', 0):.3f} m/s", scroll_offset=scroll_offset)
+                y_logical = self._sb_kv_row(y_logical, sb_x + pad, sb_x + rpad, "Vy (Body)", f"{rinfo.get('vy', 0):.3f} m/s", scroll_offset=scroll_offset)
+                om = rinfo.get('omega', 0)
+                y_logical = self._sb_kv_row(y_logical, sb_x + pad, sb_x + rpad, "Omega", f"{om:.3f} rad/s ({math.degrees(om):.1f}°/s)", scroll_offset=scroll_offset)
+                y_logical = self._sb_kv_row(y_logical, sb_x + pad, sb_x + rpad, "Speed", f"{rinfo.get('speed', 0):.3f} m/s", scroll_offset=scroll_offset)
+                y_logical += 4
+                
+                # ── Physical ─────────────────────────────────────────────────
+                y_logical = self._sb_divider(y_logical, sb_x, sb_w, scroll_offset)
+                y_logical = self._sb_section_header(y_logical, sb_x + pad, "PHYSICAL", scroll_offset)
+                y_logical = self._sb_kv_row(y_logical, sb_x + pad, sb_x + rpad, "Radius", f"{rinfo.get('radius', 0):.2f} m", scroll_offset=scroll_offset)
+                y_logical = self._sb_kv_row(y_logical, sb_x + pad, sb_x + rpad, "Mass", f"{rinfo.get('mass', 0):.1f} kg", scroll_offset=scroll_offset)
+                y_logical = self._sb_kv_row(y_logical, sb_x + pad, sb_x + rpad, "Friction", f"{rinfo.get('friction', 0):.3f}", scroll_offset=scroll_offset)
+                y_logical += 4
+                
+                # ── Dribbler ─────────────────────────────────────────────────
+                y_logical = self._sb_divider(y_logical, sb_x, sb_w, scroll_offset)
+                y_logical = self._sb_section_header(y_logical, sb_x + pad, "DRIBBLER", scroll_offset)
+                drib_on = rinfo.get('dribbler_active', False)
+                y_logical = self._sb_kv_row(y_logical, sb_x + pad, sb_x + rpad, "Active", "YES" if drib_on else "NO", val_color=SB_GREEN if drib_on else SB_TEXT_DIM, scroll_offset=scroll_offset)
+                y_logical = self._sb_kv_row(y_logical, sb_x + pad, sb_x + rpad, "PWM", f"{rinfo.get('dribbler_pwm', 0)}", scroll_offset=scroll_offset)
+                grip = rinfo.get('is_gripped', False)
+                y_logical = self._sb_kv_row(y_logical, sb_x + pad, sb_x + rpad, "Gripped", "YES" if grip else "NO", val_color=SB_AMBER if grip else SB_TEXT_DIM, scroll_offset=scroll_offset)
+                y_logical += 4
+                
+                # ── Kinematics ───────────────────────────────────────────────
+                y_logical = self._sb_divider(y_logical, sb_x, sb_w, scroll_offset)
+                y_logical = self._sb_section_header(y_logical, sb_x + pad, "WHEEL SPEEDS", scroll_offset)
+                wheels = rinfo.get('omega_wheels', [0, 0, 0])
+                for j, w_spd in enumerate(wheels):
+                    rpm = w_spd * 60 / (2 * math.pi)
+                    y_logical = self._sb_kv_row(y_logical, sb_x + pad, sb_x + rpad, f"Wheel {j+1}", f"{w_spd:.2f} rad/s ({rpm:.0f} RPM)", scroll_offset=scroll_offset)
+                y_logical += 4
+                
+                # ── State ────────────────────────────────────────────────────
+                y_logical = self._sb_divider(y_logical, sb_x, sb_w, scroll_offset)
+                y_logical = self._sb_section_header(y_logical, sb_x + pad, "STATE", scroll_offset)
+                y_logical = self._sb_kv_row(y_logical, sb_x + pad, sb_x + rpad, "Role", f"{rinfo.get('role', '-')}", scroll_offset=scroll_offset)
+                y_logical = self._sb_kv_row(y_logical, sb_x + pad, sb_x + rpad, "Strategy", f"{rinfo.get('strategy', '-')}", val_color=SB_ACCENT, scroll_offset=scroll_offset)
+                y_logical = self._sb_kv_row(y_logical, sb_x + pad, sb_x + rpad, "FSM State", f"{rinfo.get('state', '-')}", scroll_offset=scroll_offset)
+                
+                px = sb_x + pad + 8
+                px += self._sb_status_pill(px, y_logical, "READY", rinfo.get('is_ready', False), SB_GREEN, scroll_offset=scroll_offset) + 5
+                self._sb_status_pill(px, y_logical, "STOP", rinfo.get('is_stopped', False), SB_RED, scroll_offset=scroll_offset)
+                y_logical += 20
+                y_logical += 4
+                
+                # ── Ball (Robot Frame) ───────────────────────────────────────
+                y_logical = self._sb_divider(y_logical, sb_x, sb_w, scroll_offset)
+                y_logical = self._sb_section_header(y_logical, sb_x + pad, "BALL (ROBOT FRAME)", scroll_offset)
+                y_logical = self._sb_kv_row(y_logical, sb_x + pad, sb_x + rpad, "Local X", f"{rinfo.get('ball_local_x', 0):.3f} m", scroll_offset=scroll_offset)
+                y_logical = self._sb_kv_row(y_logical, sb_x + pad, sb_x + rpad, "Local Y", f"{rinfo.get('ball_local_y', 0):.3f} m", scroll_offset=scroll_offset)
+                y_logical = self._sb_kv_row(y_logical, sb_x + pad, sb_x + rpad, "Distance", f"{rinfo.get('ball_local_dist', 0):.3f} m", scroll_offset=scroll_offset)
+                b_ang = rinfo.get('ball_local_angle', 0)
+                y_logical = self._sb_kv_row(y_logical, sb_x + pad, sb_x + rpad, "Angle", f"{b_ang:.3f} rad ({math.degrees(b_ang):.1f}°)", scroll_offset=scroll_offset)
+                y_logical += 8
+                
+                # Mini 2D Diagram
+                diag_size = 120
+                diag_x = sb_x + pad + (sb_w - 28 - diag_size) // 2
+                diag_y = y_logical - scroll_offset
+                
+                diag_rect = pygame.Rect(diag_x, diag_y, diag_size, diag_size)
+                pygame.draw.rect(self.screen, SB_SURFACE, diag_rect, border_radius=4)
+                pygame.draw.rect(self.screen, SB_BORDER, diag_rect, 1, border_radius=4)
+                
+                cx = diag_x + diag_size // 2
+                cy = diag_y + diag_size // 2
+                
+                max_dist = 4.0
+                scale = (diag_size // 2 - 10) / max_dist
+                
+                # Grid lines
+                pygame.draw.line(self.screen, SB_BORDER, (cx, diag_y + 5), (cx, diag_y + diag_size - 5), 1)
+                pygame.draw.line(self.screen, SB_BORDER, (diag_x + 5, cy), (diag_x + diag_size - 5, cy), 1)
+                
+                # Draw robot
+                pygame.draw.circle(self.screen, COLOR_ROBOT_BODY, (cx, cy), 6)
+                pygame.draw.circle(self.screen, COLOR_ROBOT_FRONT, (cx, cy - 6), 3)
+                
+                bx = rinfo.get('ball_local_x', 0)
+                by = rinfo.get('ball_local_y', 0)
+                
+                dist = math.hypot(bx, by)
+                if dist > max_dist:
+                    bx = bx / dist * max_dist
+                    by = by / dist * max_dist
+                
+                # +X is forward (UP in diagram -> -Y in pygame)
+                # +Y is left (LEFT in diagram -> -X in pygame)
+                ball_px = cx - int(by * scale)
+                ball_py = cy - int(bx * scale)
+                
+                pygame.draw.line(self.screen, SB_TEXT_DIM, (cx, cy), (ball_px, ball_py), 1)
+                pygame.draw.circle(self.screen, COLOR_BALL, (ball_px, ball_py), 4)
+                
+                y_logical += diag_size + 12
     # ------------------------------------------------------------------
     # Sidebar primitive helpers
     # ------------------------------------------------------------------
@@ -521,17 +699,31 @@ class Renderer:
         # Rough estimation based on sections
         height = 52  # Header (not scrolled)
         height += 50  # Mode buttons
-        height += 80  # Ball info
-        height += len(ally_robots) * 140  # Ally robot cards
-        height += len(enemy_robots) * 80  # Enemy robot cards
-        height += 70  # Toggles section
-        height += 60  # Obstacles header
-        if obstacles:
-            height += len(obstacles) * 20
-        if input_mode:
-            height += 60  # Input box
-        if extra_lines:
-            height += len(extra_lines) * 18 + 30
+        height += 50  # Tab buttons
+        
+        if self.active_sidebar_tab == "OVERVIEW":
+            height += 80  # Ball info
+            height += len(ally_robots) * 140  # Ally robot cards
+            height += len(enemy_robots) * 80  # Enemy robot cards
+            height += 70  # Toggles section
+            height += 60  # Obstacles header
+            if obstacles:
+                height += len(obstacles) * 20
+            if input_mode:
+                height += 60  # Input box
+            if extra_lines:
+                height += len(extra_lines) * 18 + 30
+        elif self.active_sidebar_tab == "WORLDSTATE":
+            height += 50  # Robot selector
+            height += 100 # Pose
+            height += 120 # Velocity
+            height += 100 # Physical
+            height += 100 # Dribbler
+            height += 100 # Kinematics
+            height += 120 # State
+            height += 120 # Ball (Robot Frame)
+            height += 140 # Mini diagram
+            
         return height
     
     def _is_visible_in_sidebar(self, y: int, height: int, scroll_start: int, viewport_h: int) -> bool:
@@ -641,6 +833,21 @@ class Renderer:
             return SimMode.REGIONAL
         if self.btn_nasional_rect.collidepoint(pos):
             return SimMode.NASIONAL
+        return None
+
+    def check_tab_click(self, pos: tuple[int, int]) -> str | None:
+        """Cek apakah klik mengenai tombol tab. Return nama tab atau None."""
+        if self.btn_tab_overview_rect.collidepoint(pos):
+            return "OVERVIEW"
+        if self.btn_tab_worldstate_rect.collidepoint(pos):
+            return "WORLDSTATE"
+        return None
+
+    def check_robot_selector_click(self, pos: tuple[int, int]) -> int | None:
+        """Cek apakah klik mengenai tombol selector robot di tab worldstate."""
+        for i, rect in enumerate(self._robot_selector_rects):
+            if rect.collidepoint(pos):
+                return i
         return None
 
     def check_obstacle_checkbox_click(self, pos: tuple[int, int],
