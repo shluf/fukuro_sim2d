@@ -21,6 +21,7 @@ setup(
     entry_points={
         'console_scripts': [
             'simulation = fukuro_sim2d.simulation_node:main',
+			'interception = fukuro_sim2d.interception_node:main',
         ],
     },
 )
