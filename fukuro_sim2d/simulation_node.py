@@ -7,7 +7,6 @@ Mendukung 2 mode:
 """
 
 import math
-import json
 
 import pygame
 import numpy as np
@@ -20,7 +19,6 @@ from std_msgs.msg import Bool
 
 from fukuro_interface.msg import WorldState, StrategyState, Robot as RobotMsg, Obstacle
 from fukuro_interface.srv import DribblerControl, KickService, SetReady
-from cob_srvs.srv import SetString
 
 from fukuro_sim2d.physics.robot_model import RobotModel
 from fukuro_sim2d.physics.ball_model import BallModel
@@ -262,11 +260,6 @@ class SimulationNode(Node):
             self._strategy_callback, 10,
             callback_group=self.callback_group)
 
-        # Strategy change service client
-        self.strategy_change_client = self.create_client(
-            SetString, '/fukuro/strategy/change',
-            callback_group=self.callback_group)
-
         # Renderer
         self.renderer = Renderer(
             screen_width=1500, screen_height=900,
@@ -417,14 +410,13 @@ class SimulationNode(Node):
         for enemy in self.enemies:
             enemy.model.update(Ts)
 
-        # Reset grip
+        # simpan grip state frame SEBELUMNYA, lalu baru reset
+        ball_was_gripped = self._is_ball_gripped()
         for agent in agents:
             agent.model.is_gripped = False
 
-        ball_gripped = False
-
         # Update ball first (if not gripped)
-        if not ball_gripped:
+        if not ball_was_gripped:
             self.ball.update(Ts)
 
         # Handle physics collisions BEFORE grip check
@@ -452,7 +444,6 @@ class SimulationNode(Node):
                     if forward > 0 and abs(lateral) < m.radius * 0.8:
                         self.ball.grip_to(m)
                         m.is_gripped = True
-                        ball_gripped = True
                         break
 
         # Check for goals (update scoreboard)
@@ -509,6 +500,14 @@ class SimulationNode(Node):
         enemy_msgs = self._build_enemy_msgs()
 
         bx, by = self.ball.x, self.ball.y
+        ball_angle = self.ball.angle
+        ball_speed = self.ball.speed
+
+        # Hitung bola_vel dan bola_dir (world frame)
+        bvx = ball_speed * math.cos(ball_angle)
+        bvy = ball_speed * math.sin(ball_angle)
+        bdn_x = math.cos(ball_angle) if ball_speed > 1e-6 else 0.0
+        bdn_y = math.sin(ball_angle) if ball_speed > 1e-6 else 0.0
 
         agents = [self.agent1, self.agent2, self.agent3]
         if self.mode == SimMode.REGIONAL:
@@ -516,38 +515,56 @@ class SimulationNode(Node):
 
         for agent in agents:
             m = agent.model
-            
-            # Bola dalam robot frame
-            dx = bx - m.x
-            dy = by - m.y
-            cos_th = math.cos(m.theta)
-            sin_th = math.sin(m.theta)
-            forward = dx * cos_th + dy * sin_th
-            lateral = -dx * sin_th + dy * cos_th
-            bearing = math.atan2(lateral, forward) if (forward or lateral) else 0.0
 
             ws = WorldState()
             ws.robot_name = agent.name
             ws.robot_role = agent.role
 
+            # Pose diri
             ws.posisi_diri = Pose2D(x=m.x, y=m.y, theta=m.theta)
-            ws.bola = Pose2D(x=forward, y=lateral, theta=bearing)
 
-            # Kawan (tim list)
+            # State velocity (body frame)
+            ws.state_vel = Pose2D(x=m.vx, y=m.vy, theta=m.omega)
+
+            # Posisi bola dalam robot frame (seperti output RealSense)
+            _dx = bx - m.x
+            _dy = by - m.y
+            _cos = math.cos(m.theta)
+            _sin = math.sin(m.theta)
+            _ball_lateral = -_dx * _sin + _dy * _cos   # sumbu Y robot (+kiri)
+            _ball_forward =  _dx * _cos + _dy * _sin   # sumbu X robot (maju)
+            _ball_bearing = math.atan2(_ball_lateral, _ball_forward)  # sudut bearing
+            ws.bola = Pose2D(x=_ball_lateral, y=_ball_forward, theta=_ball_bearing)
+
+            # Bola vel dan direction (world frame)
+            ws.bola_vel = Pose2D(x=bvx, y=bvy, theta=0.0)
+            ws.bola_dir = Pose2D(x=bdn_x, y=bdn_y, theta=0.0)
+
+            # Fix #1: is_visible selalu True (sim tidak punya occlusion)
+            ws.is_visible = True
+
+            # Fix is_ready root
+            ws.is_grip = m.is_gripped
+            ws.is_ready = m.is_ready
+            ws.obstacles = obs_list
+
+            # Tim list — dengan robot_vel
             tim_list = []
             for ally in agents:
                 if ally.name != agent.name:
                     ally_msg = RobotMsg()
                     ally_msg.robot_pose = Pose2D(
                         x=ally.model.x, y=ally.model.y, theta=ally.model.theta)
+                    ally_msg.robot_vel = Pose2D(
+                        x=ally.model.vx, y=ally.model.vy, theta=ally.model.omega)
                     ally_msg.robot_role = ally.role
                     ally_msg.is_ready = ally.model.is_ready
                     tim_list.append(ally_msg)
             ws.tim = tim_list
 
-            ws.is_grip = m.is_gripped
-            ws.is_ready = m.is_ready
-            ws.obstacles = obs_list
+            # Fix #2: kawan — single field untuk regional (satu kawan)
+            if tim_list:
+                ws.kawan = tim_list[0]
 
             # Enemy list (mode nasional)
             if self.mode == SimMode.NASIONAL:
@@ -569,6 +586,8 @@ class SimulationNode(Node):
             em = RobotMsg()
             em.robot_pose = Pose2D(
                 x=enemy.model.x, y=enemy.model.y, theta=enemy.model.theta)
+            em.robot_vel = Pose2D(
+                x=enemy.model.vx, y=enemy.model.vy, theta=enemy.model.omega)
             em.robot_role = "enemy"
             em.is_ready = False
             msgs.append(em)
@@ -811,23 +830,6 @@ class SimulationNode(Node):
                     self._resolve_rect_collision(self.ball, self.ball.x, self.ball.y,
                                                 self.ball.radius, ox, oy, obs.size, obs.size,
                                                 elasticity=0.6)
-
-    # ------------------------------------------------------------------
-    # Strategy change service client
-    # ------------------------------------------------------------------
-
-    def _send_strategy_change(self, mode_name: str):
-        if not self.strategy_change_client.wait_for_service(timeout_sec=1.0):
-            self.get_logger().warn("Strategy change service not available")
-            return
-        
-        req = SetString.Request()
-        req.data = json.dumps({"mode": mode_name})
-        
-        future = self.strategy_change_client.call_async(req)
-        future.add_done_callback(
-            lambda f: self.get_logger().info(
-                f"Strategy → {mode_name}: {'success' if f.result().success else 'failed'}"))
 
     # ------------------------------------------------------------------
     # Obstacle management
