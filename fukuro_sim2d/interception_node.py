@@ -17,10 +17,9 @@ class BallInterceptionNode(Node):
             10
         )
 
-        # Dribbler service client
         self.dribbler_client = self.create_client(DribblerControl, '/r2/fukuro/controller/dribbler')
         self.dribbler_active = False
-        self.dribbler_distance = 1.5  # aktifkan dribbler kalau bola dalam jarak 1.5m
+        self.dribbler_distance = 1.5
 
         self.Kp_linear = 2.0
         self.Kp_angular = 3.0
@@ -28,7 +27,6 @@ class BallInterceptionNode(Node):
         self.max_angular_speed = 3.14
         self.stop_distance = 0.2
 
-        # Estimasi velocity bola dalam world frame
         self.prev_bx_world = None
         self.prev_by_world = None
         self.prev_time = None
@@ -63,7 +61,6 @@ class BallInterceptionNode(Node):
         ry = msg.posisi_diri.y
         rtheta = msg.posisi_diri.theta
 
-        # Konversi bola dari body frame ke world frame
         bx_local = msg.bola.x
         by_local = msg.bola.y
         bx_world = rx + bx_local * math.cos(rtheta) - by_local * math.sin(rtheta)
@@ -79,7 +76,6 @@ class BallInterceptionNode(Node):
             self.stop_robot()
             return
 
-        # Estimasi velocity bola dalam world frame
         now = self.get_clock().now().nanoseconds / 1e9
         if self.prev_bx_world is not None and self.prev_time is not None:
             dt = now - self.prev_time
@@ -98,16 +94,13 @@ class BallInterceptionNode(Node):
         cmd = Twist()
 
         if ball_speed > self.ball_speed_threshold:
-            # Bola bergerak — prediksi titik intersepsi dan bergerak ke sana
             lookahead_time = distance_to_ball / self.max_linear_speed
             target_wx = bx_world + self.est_bvx * lookahead_time
             target_wy = by_world + self.est_bvy * lookahead_time
 
-            # Hadap arah datangnya bola
             ball_dir = math.atan2(self.est_bvy, self.est_bvx)
             target_theta = ball_dir + math.pi
 
-            # Transformasi error ke body frame
             error_wx = target_wx - rx
             error_wy = target_wy - ry
             error_local_x =  error_wx * math.cos(rtheta) + error_wy * math.sin(rtheta)
@@ -122,22 +115,28 @@ class BallInterceptionNode(Node):
             vy = self.Kp_linear * error_local_y
             wz = self.Kp_angular * error_theta
 
-            # Aktifkan dribbler kalau bola sudah dekat
             if distance_to_ball < self.dribbler_distance and not self.dribbler_active:
                 self.activate_dribbler()
             elif distance_to_ball >= self.dribbler_distance and self.dribbler_active:
                 self.deactivate_dribbler()
 
         else:
-            # Bola diam — robot diam, hanya hadap ke bola, dribbler off
+            target_wx = bx_world
+            target_wy = by_world
             target_theta = math.atan2(by_world - ry, bx_world - rx)
+
+            error_wx = target_wx - rx
+            error_wy = target_wy - ry
+            error_local_x =  error_wx * math.cos(rtheta) + error_wy * math.sin(rtheta)
+            error_local_y = -error_wx * math.sin(rtheta) + error_wy * math.cos(rtheta)
+
             error_theta = math.atan2(
                 math.sin(target_theta - rtheta),
                 math.cos(target_theta - rtheta)
             )
 
-            vx = 0.0
-            vy = 0.0
+            vx = self.Kp_linear * error_local_x
+            vy = self.Kp_linear * error_local_y
             wz = self.Kp_angular * error_theta
 
             if self.dribbler_active:
