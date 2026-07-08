@@ -19,7 +19,13 @@ from typing import Callable
 
 from geometry_msgs.msg import Pose2D
 
-from fukuro_interface.msg import BaseStation, Obstacle, Robot, WorldState
+from fukuro_interface.msg import (
+    BaseStation,
+    Obstacle,
+    OpponentRobot,
+    TeammateRobot,
+    WorldState,
+)
 from fukuro_interface.srv import StrategyChange
 from fukuro_sim2d.protobuf import Protobuf_from_BS_pb2 as bs_pb2
 from fukuro_sim2d.protobuf import Protobuf_from_ROS_pb2 as ros_pb2
@@ -374,14 +380,15 @@ class SimRobotCommsBridge:
         msg.ball.is_detected = True
 
         for enemy_info in proto.enemy_robots:
-            robot = Robot()
+            robot = OpponentRobot()
             robot.robot_pose = _pose_from_proto(enemy_info.robot_pose)
-            robot.robot_vel = _pose_from_proto(enemy_info.robot_vel)
             robot.color_flag = _team_color_to_string(enemy_info.flag_color)
+            robot.exist = True
+            robot.front_exist = True
             msg.enemy_robots.append(robot)
 
         for friendly_info in proto.friendly_robots:
-            robot = Robot()
+            robot = TeammateRobot()
             robot.robot_pose = _pose_from_proto(friendly_info.robot_pose)
             robot.robot_vel = _pose_from_proto(friendly_info.robot_vel)
             robot.path_goal = _pose_from_proto(friendly_info.path_goal)

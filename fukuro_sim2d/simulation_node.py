@@ -13,11 +13,17 @@ import pygame
 import rclpy
 from geometry_msgs.msg import Pose2D, Twist
 from rclpy.callback_groups import ReentrantCallbackGroup
+from rclpy.executors import ExternalShutdownException
 from rclpy.node import Node
 from std_msgs.msg import Bool
 
-from fukuro_interface.msg import Obstacle, StrategyState, WorldState
-from fukuro_interface.msg import Robot as RobotMsg
+from fukuro_interface.msg import (
+    Obstacle,
+    OpponentRobot,
+    StrategyState,
+    TeammateRobot,
+    WorldState,
+)
 from fukuro_interface.srv import DribblerControl, KickService, SetReady, StrategyChange
 from fukuro_sim2d.objects.field import (
     NasionalFieldConfig,
@@ -892,7 +898,7 @@ class SimulationNode(Node):
 
         teammates = []
         for ally in self._get_teammate_agents(agent):
-            ally_msg = RobotMsg()
+            ally_msg = TeammateRobot()
             ally_msg.robot_pose = Pose2D(
                 x=ally.model.x, y=ally.model.y, theta=ally.model.theta
             )
@@ -935,15 +941,18 @@ class SimulationNode(Node):
     def _build_enemy_msgs(self) -> list:
         msgs = []
         for enemy in self.enemies:
-            em = RobotMsg()
+            em = OpponentRobot()
             em.robot_pose = Pose2D(
                 x=enemy.model.x, y=enemy.model.y, theta=enemy.model.theta
             )
-            em.robot_vel = Pose2D(
-                x=enemy.model.vx, y=enemy.model.vy, theta=enemy.model.omega
+            em.distance_to_ball = math.hypot(
+                self.ball.x - enemy.model.x,
+                self.ball.y - enemy.model.y,
             )
-            em.robot_role = "enemy"
-            em.is_ready = False
+            em.color_flag = "unknown"
+            em.marked_by = ""
+            em.exist = True
+            em.front_exist = True
             msgs.append(em)
         return msgs
 
@@ -1406,8 +1415,21 @@ class SimulationNode(Node):
                         dragging_obstacle.x = wx
                         dragging_obstacle.y = wy
 
-            # ROS spin
-            rclpy.spin_once(self, timeout_sec=0.001)
+            # ROS spin. When the launcher sends SIGTERM after another process exits,
+            # rclpy may already be shutting down; treat that as normal termination.
+            if not rclpy.ok():
+                running = False
+                break
+            try:
+                rclpy.spin_once(self, timeout_sec=0.001)
+            except ExternalShutdownException:
+                running = False
+                break
+            except Exception:
+                if not rclpy.ok():
+                    running = False
+                    break
+                raise
 
             # ── Render ──
             renderer.clear()
@@ -1592,11 +1614,14 @@ def main():
         node = SimulationNode()
         node.get_logger().info("Starting simulation...")
         node.run()
+    except (KeyboardInterrupt, ExternalShutdownException):
+        pass
     except Exception as e:
-        import traceback
+        if rclpy.ok():
+            import traceback
 
-        print(f"Error in simulation: {e}")
-        traceback.print_exc()
+            print(f"Error in simulation: {e}")
+            traceback.print_exc()
     finally:
         if node is not None:
             node.shutdown()
