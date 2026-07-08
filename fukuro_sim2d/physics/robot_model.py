@@ -14,18 +14,31 @@ Persamaan update (global displacement dari body velocity):
 """
 
 import math
+
 import numpy as np
+
 from fukuro_sim2d.physics.omni3_kinematics import Omni3Kinematics
 
 
 class RobotModel:
     """Physics model untuk satu robot omniwheel."""
 
-    def __init__(self, x: float, y: float, theta: float,
-                 radius: float = 0.2,
-                 wheel_R: float = 0.5, wheel_r: float = 0.05,
-                 wheel_angles_deg: list[float] | None = None,
-                 mass: float = 20.0, friction: float = 0.95):
+    def __init__(
+        self,
+        x: float,
+        y: float,
+        theta: float,
+        radius: float = 0.2,
+        wheel_R: float = 0.5,
+        wheel_r: float = 0.05,
+        wheel_angles_deg: list[float] | None = None,
+        mass: float = 20.0,
+        friction: float = 0.98,
+        max_linear_speed: float = 2.5,
+        max_angular_speed: float = 4.0,
+        max_linear_accel: float = 3.0,
+        max_angular_accel: float = 8.0,
+    ):
         """
         Parameters
         ----------
@@ -52,9 +65,19 @@ class RobotModel:
         self.theta = theta
 
         # --- Body velocity (robot frame) ---
-        self.vx = 0.0    # m/s  maju
-        self.vy = 0.0    # m/s  lateral
+        self.vx = 0.0  # m/s  maju
+        self.vy = 0.0  # m/s  lateral
         self.omega = 0.0  # rad/s
+
+        # Target body velocity dari controller/strategy. Robot fisik tidak
+        # meloncat instan ke target, jadi update() menerapkan limit akselerasi.
+        self.target_vx = 0.0
+        self.target_vy = 0.0
+        self.target_omega = 0.0
+        self.max_linear_speed = max_linear_speed
+        self.max_angular_speed = max_angular_speed
+        self.max_linear_accel = max_linear_accel
+        self.max_angular_accel = max_angular_accel
 
         # --- Physical properties ---
         self.radius = radius
@@ -78,10 +101,31 @@ class RobotModel:
     # ------------------------------------------------------------------
 
     def set_velocity(self, vx: float, vy: float, omega: float):
-        """Set body velocity (m/s, rad/s)."""
-        self.vx = vx
-        self.vy = vy
-        self.omega = omega
+        """Set target body velocity command (m/s, rad/s)."""
+        linear_norm = math.hypot(vx, vy)
+        if linear_norm > self.max_linear_speed and linear_norm > 1e-9:
+            scale = self.max_linear_speed / linear_norm
+            vx *= scale
+            vy *= scale
+        self.target_vx = vx
+        self.target_vy = vy
+        self.target_omega = max(
+            -self.max_angular_speed, min(self.max_angular_speed, omega)
+        )
+
+    def reset_velocity(self):
+        """Emergency stop: clear target and actual velocity immediately."""
+        self.target_vx = self.target_vy = self.target_omega = 0.0
+        self.vx = self.vy = self.omega = 0.0
+        self.omega_wheels = np.zeros(3)
+
+    @staticmethod
+    def _approach(current: float, target: float, max_delta: float) -> float:
+        if current < target:
+            return min(current + max_delta, target)
+        if current > target:
+            return max(current - max_delta, target)
+        return current
 
     def update(self, Ts: float):
         """Advance state satu timestep.
@@ -90,6 +134,18 @@ class RobotModel:
         ----------
         Ts : float   — periode sampling (detik)
         """
+        # Acceleration-limited response toward target command.
+        max_linear_delta = self.max_linear_accel * Ts
+        max_angular_delta = self.max_angular_accel * Ts
+        self.vx = self._approach(self.vx, self.target_vx, max_linear_delta)
+        self.vy = self._approach(self.vy, self.target_vy, max_linear_delta)
+        self.omega = self._approach(self.omega, self.target_omega, max_angular_delta)
+
+        # Small floor-contact/rolling loss, like real omni wheels under load.
+        self.vx *= self.friction
+        self.vy *= self.friction
+        self.omega *= self.friction
+
         cos_th = math.cos(self.theta)
         sin_th = math.sin(self.theta)
 
@@ -97,11 +153,6 @@ class RobotModel:
         self.x += (self.vx * cos_th - self.vy * sin_th) * Ts
         self.y += (self.vx * sin_th + self.vy * cos_th) * Ts
         self.theta += self.omega * Ts  # CCW positif (standar ROS)
-
-        # Apply friction decay to velocity
-        self.vx *= self.friction
-        self.vy *= self.friction
-        self.omega *= self.friction
 
         # Normalize theta ke [0, 2π)
         self.theta = self.theta % (2 * math.pi)

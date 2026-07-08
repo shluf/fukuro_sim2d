@@ -8,48 +8,50 @@ Mendukung 2 mode:
 
 import math
 
-import pygame
 import numpy as np
-
+import pygame
 import rclpy
-from rclpy.node import Node
+from geometry_msgs.msg import Pose2D, Twist
 from rclpy.callback_groups import ReentrantCallbackGroup
-from geometry_msgs.msg import Twist, Pose2D
+from rclpy.node import Node
 from std_msgs.msg import Bool
 
-from fukuro_interface.msg import WorldState, StrategyState, Robot as RobotMsg, Obstacle
-from fukuro_interface.srv import DribblerControl, KickService, SetReady
-
-from fukuro_sim2d.physics.robot_model import RobotModel
-from fukuro_sim2d.physics.ball_model import BallModel
+from fukuro_interface.msg import Obstacle, StrategyState, WorldState
+from fukuro_interface.msg import Robot as RobotMsg
+from fukuro_interface.srv import DribblerControl, KickService, SetReady, StrategyChange
 from fukuro_sim2d.objects.field import (
+    NasionalFieldConfig,
+    NasionalObstacleConfig,
+    RegionalFieldConfig,
+    RegionalObstacleConfig,
     SimMode,
-    RegionalFieldConfig, RegionalObstacleConfig,
-    NasionalFieldConfig, NasionalObstacleConfig,
 )
-from fukuro_sim2d.render.renderer import Renderer, COLOR_ROBOT_BODY, COLOR_ENEMY_BODY
-
+from fukuro_sim2d.physics.ball_model import BallModel
+from fukuro_sim2d.physics.robot_model import RobotModel
+from fukuro_sim2d.render.renderer import COLOR_ENEMY_BODY, COLOR_ROBOT_BODY, Renderer
+from fukuro_sim2d.sim_comms_bridge import SimRobotCommsBridge
 
 # ======================================================================
 # DraggableObstacle
 # ======================================================================
 
+
 class DraggableObstacle:
     """Obstacle yang bisa di-drag dan di-toggle visibility."""
-    
+
     def __init__(self, x: float, y: float, size: float = 0.4):
         self.x = x
         self.y = y
         self.size = size
         self.enabled = True  # Checkbox state
-    
+
     def to_obstacle_msg(self):
         """Convert ke ROS Obstacle message."""
         obs = Obstacle()
         half = self.size / 2.0
-        obs.position.position.x = self.x - half
-        obs.position.position.y = self.y - half
-        obs.position.orientation.w = 1.0
+        obs.position.x = self.x - half
+        obs.position.y = self.y - half
+        obs.position.theta = 0.0
         obs.width = self.size
         obs.length = self.size
         return obs
@@ -59,11 +61,18 @@ class DraggableObstacle:
 # RobotAgent — robot kawan dengan ROS2 interfaces
 # ======================================================================
 
+
 class RobotAgent:
     """Robot kawan dengan cmd_vel, services (dribbler, kick, set_ready, is_stop)."""
 
-    def __init__(self, name: str, node: 'SimulationNode',
-                 model: RobotModel, display_name: str, role: str = "striker"):
+    def __init__(
+        self,
+        name: str,
+        node: "SimulationNode",
+        model: RobotModel,
+        display_name: str,
+        role: str = "striker",
+    ):
         self.name = name
         self.node = node
         self.model = model
@@ -73,45 +82,85 @@ class RobotAgent:
         self.current_strategy = "idle"
         self.current_state = "idle"
         self.is_stopped = False  # State untuk is_stop
+        self.latest_strategy_goal = Pose2D()
+        self.last_base_station = None
+        self.self_acceleration = Pose2D()
 
         cb = node.callback_group
 
         self.vel_sub = node.create_subscription(
-            Twist, f'/{name}/cmd_vel',
-            self._vel_callback, 10, callback_group=cb)
+            Twist, f"/{name}/cmd_vel", self._vel_callback, 10, callback_group=cb
+        )
 
         self.dribbler_srv = node.create_service(
-            DribblerControl, f'/{name}/fukuro/controller/dribbler',
-            self._handle_dribbler, callback_group=cb)
+            DribblerControl,
+            f"/{name}/fukuro/controller/dribbler",
+            self._handle_dribbler,
+            callback_group=cb,
+        )
 
         self.kick_srv = node.create_service(
-            KickService, f'/{name}/fukuro/controller/kick',
-            self._handle_kick, callback_group=cb)
+            KickService,
+            f"/{name}/fukuro/controller/kick",
+            self._handle_kick,
+            callback_group=cb,
+        )
 
         self.set_ready_srv = node.create_service(
-            SetReady, f'/{name}/fukuro/strategy/set_ready',
-            self._handle_set_ready, callback_group=cb)
+            SetReady,
+            f"/{name}/fukuro/strategy/set_ready",
+            self._handle_set_ready,
+            callback_group=cb,
+        )
 
         # Service is_stop
         self.stop_srv = node.create_service(
-            SetReady, f'/{name}/fukuro/controller/is_stop',
-            self._handle_is_stop, callback_group=cb)
+            SetReady,
+            f"/{name}/fukuro/controller/is_stop",
+            self._handle_is_stop,
+            callback_group=cb,
+        )
 
         self.world_state_pub = node.create_publisher(
-            WorldState, f'/{name}/fukuro/world_model/state', 10)
+            WorldState, f"/{name}/fukuro/world_model/state", 10
+        )
+
+        self.strategy_goal_sub = node.create_subscription(
+            StrategyState,
+            f"/{name}/fukuro/strategy/goal",
+            self._strategy_goal_callback,
+            10,
+            callback_group=cb,
+        )
 
     def _vel_callback(self, msg: Twist):
         # Jika robot di-stop, abaikan cmd_vel
         if self.is_stopped:
-            self.model.set_velocity(0, 0, 0)
+            self.model.reset_velocity()
         else:
             self.model.set_velocity(msg.linear.x, msg.linear.y, msg.angular.z)
+
+    def _strategy_goal_callback(self, msg: StrategyState):
+        self.latest_strategy_goal = msg.goal_pose
+        self.set_strategy_info(msg.strategy_name, msg.present_state)
+
+        if msg.is_stop:
+            self.is_stopped = True
+            self.model.reset_velocity()
+            return
+
+        self.is_stopped = False
+        if msg.is_local:
+            self.model.set_velocity(
+                msg.local_nav.x, msg.local_nav.y, msg.local_nav.theta
+            )
 
     def _handle_dribbler(self, req, res):
         if req.is_active:
             self.model.activate_dribbler(req.dribbler_pwm)
             self.node.get_logger().info(
-                f"[{self.name}] Dribbler ON, PWM={req.dribbler_pwm}")
+                f"[{self.name}] Dribbler ON, PWM={req.dribbler_pwm}"
+            )
         else:
             self.model.deactivate_dribbler()
             self.node.get_logger().info(f"[{self.name}] Dribbler OFF")
@@ -119,6 +168,11 @@ class RobotAgent:
         return res
 
     def _handle_kick(self, req, res):
+        if not req.is_kick:
+            res.status = KickService.Response.OK
+            res.kick_done = True
+            return res
+
         m = self.model
         if m.is_gripped:
             MAX_KICK_SPEED = 5.0
@@ -129,26 +183,31 @@ class RobotAgent:
             m.deactivate_dribbler()
             self.node.get_logger().info(
                 f"[{self.name}] Kick! power={req.kick_power:.0f}, "
-                f"speed={kick_speed:.2f} m/s")
+                f"speed={kick_speed:.2f} m/s"
+            )
+            res.status = KickService.Response.OK
             res.kick_done = True
         else:
             self.node.get_logger().warn(
-                f"[{self.name}] Kick gagal: bola tidak dalam grip!")
+                f"[{self.name}] Kick gagal: bola tidak dalam grip!"
+            )
+            res.status = KickService.Response.ERROR
             res.kick_done = False
         return res
 
     def _handle_set_ready(self, req, res):
         self.model.is_ready = req.is_ready
-        self.node.get_logger().info(
-            f"[{self.name}] is_ready = {self.model.is_ready}")
+        self.node.get_logger().info(f"[{self.name}] is_ready = {self.model.is_ready}")
         res.success = True
         return res
 
     def _handle_is_stop(self, req, res):
         """Service untuk toggle stop state robot."""
-        self.is_stopped = req.is_ready  # Reuse SetReady.srv dengan is_ready sebagai stop flag
+        self.is_stopped = (
+            req.is_ready
+        )  # Reuse SetReady.srv dengan is_ready sebagai stop flag
         if self.is_stopped:
-            self.model.set_velocity(0, 0, 0)
+            self.model.reset_velocity()
             self.node.get_logger().info(f"[{self.name}] STOPPED")
         else:
             self.node.get_logger().info(f"[{self.name}] RESUMED")
@@ -161,7 +220,7 @@ class RobotAgent:
 
     def info_dict(self, ball_x: float = 0.0, ball_y: float = 0.0) -> dict:
         m = self.model
-        
+
         # Calculate ball in robot frame
         dx = ball_x - m.x
         dy = ball_y - m.y
@@ -174,12 +233,20 @@ class RobotAgent:
 
         return {
             "name": self.display_name,
-            "role": self.name, # e.g. "robot2"
-            "x": m.x, "y": m.y, "theta": m.theta,
-            "vx": m.vx, "vy": m.vy, "omega": m.omega,
+            "role": self.name,  # e.g. "robot2"
+            "x": m.x,
+            "y": m.y,
+            "theta": m.theta,
+            "vx": m.vx,
+            "vy": m.vy,
+            "omega": m.omega,
             "speed": math.hypot(m.vx, m.vy),
-            "radius": m.radius, "mass": m.mass, "friction": m.friction,
-            "omega_wheels": m.omega_wheels.tolist() if hasattr(m.omega_wheels, 'tolist') else list(m.omega_wheels),
+            "radius": m.radius,
+            "mass": m.mass,
+            "friction": m.friction,
+            "omega_wheels": m.omega_wheels.tolist()
+            if hasattr(m.omega_wheels, "tolist")
+            else list(m.omega_wheels),
             "dribbler_active": m.dribbler_active,
             "dribbler_pwm": m.dribbler_pwm,
             "is_gripped": m.is_gripped,
@@ -198,6 +265,7 @@ class RobotAgent:
 # EnemyRobot
 # ======================================================================
 
+
 class EnemyRobot:
     """Robot lawan (draggable)."""
 
@@ -210,7 +278,9 @@ class EnemyRobot:
         m = self.model
         return {
             "name": self.display_name,
-            "x": m.x, "y": m.y, "theta": m.theta,
+            "x": m.x,
+            "y": m.y,
+            "theta": m.theta,
         }
 
 
@@ -218,16 +288,29 @@ class EnemyRobot:
 # SimulationNode
 # ======================================================================
 
+
 class SimulationNode(Node):
     """ROS2 Node utama simulasi 2D."""
 
     def __init__(self):
-        super().__init__('simulation_node')
+        super().__init__("simulation_node")
         self.callback_group = ReentrantCallbackGroup()
         self.Ts = 0.033
+        self.role_distance_weight = 1.0
+        self.role_angle_weight = 0.5
+        self.role_hysteresis_m = 0.25
+        self.dynamic_roles: dict[str, str] = {}
+        self._last_striker_name: str | None = None
+        self.declare_parameter("base_station_bridge.enabled", True)
+        self.declare_parameter("base_station_bridge.port_r1", 8081)
+        self.declare_parameter("base_station_bridge.port_r2", 8082)
+        self.declare_parameter("base_station_bridge.port_r3", 8083)
+        self.declare_parameter("sim_mode", "regional")
+        self.declare_parameter("sim_comms_mode", "protobuf")
 
         # Mode awal
-        self.mode = SimMode.REGIONAL
+        self.mode = self._mode_from_parameter()
+        self.comms_mode = self._comms_mode_from_parameter()
 
         # Robot models & agents (akan dibuat di _create_ros_agents)
         self.robot1_model: RobotModel = None
@@ -236,6 +319,7 @@ class SimulationNode(Node):
         self.agent1: RobotAgent = None
         self.agent2: RobotAgent = None
         self.agent3: RobotAgent = None
+        self.comms_bridges: list[SimRobotCommsBridge] = []
         self.ball: BallModel = None
 
         # Enemy robots (mode nasional)
@@ -253,40 +337,122 @@ class SimulationNode(Node):
 
         # Setup mode awal
         self._setup_mode(self.mode)
+        self._create_comms_bridges()
 
         # Strategy subscriber
         self.strategy_sub = self.create_subscription(
-            StrategyState, '/fukuro/strategy/goal',
-            self._strategy_callback, 10,
-            callback_group=self.callback_group)
+            StrategyState,
+            "/fukuro/strategy/goal",
+            self._strategy_callback,
+            10,
+            callback_group=self.callback_group,
+        )
 
         # Renderer
-        self.renderer = Renderer(
-            screen_width=1500, screen_height=900,
-            mode=self.mode)
+        self.renderer = Renderer(screen_width=1500, screen_height=900, mode=self.mode)
 
         # Timer
         self.timer = self.create_timer(
-            self.Ts, self._update_simulation,
-            callback_group=self.callback_group)
+            self.Ts, self._update_simulation, callback_group=self.callback_group
+        )
 
         self.get_logger().info(
-            f"SimulationNode initialized — mode={self.mode.value}")
+            f"SimulationNode initialized — field={self.mode.value} comms={self.comms_mode}"
+        )
+
+    def shutdown(self):
+        for bridge in self.comms_bridges:
+            bridge.stop()
 
     # ------------------------------------------------------------------
     # Mode setup
     # ------------------------------------------------------------------
 
+    def _mode_from_parameter(self) -> SimMode:
+        value = str(self.get_parameter("sim_mode").value).strip().lower()
+        if value in ("nasional", "national"):
+            return SimMode.NASIONAL
+        if value not in ("regional", ""):
+            self.get_logger().warn(
+                f"sim_mode '{value}' tidak dikenal, fallback ke regional"
+            )
+        return SimMode.REGIONAL
+
+    def _comms_mode_from_parameter(self) -> str:
+        value = str(self.get_parameter("sim_comms_mode").value).strip().lower()
+        if value in ("standalone", "none", "off", "disabled"):
+            return "standalone"
+        if value in ("protobuf", "base_station", "bs", "bridge", ""):
+            return "protobuf"
+        self.get_logger().warn(
+            f"sim_comms_mode '{value}' tidak dikenal, fallback ke protobuf"
+        )
+        return "protobuf"
+
     def _create_ros_agents(self):
         """Buat 3 RobotModel & RobotAgent (hanya sekali)."""
-        self.robot1_model = RobotModel(x=0, y=0, theta=0, radius=0.2, wheel_R=0.5, wheel_r=0.05)
-        self.robot2_model = RobotModel(x=0, y=0, theta=0, radius=0.2, wheel_R=0.5, wheel_r=0.05)
-        self.robot3_model = RobotModel(x=0, y=0, theta=0, radius=0.2, wheel_R=0.5, wheel_r=0.05)
+        self.robot1_model = RobotModel(
+            x=0, y=0, theta=0, radius=0.2, wheel_R=0.5, wheel_r=0.05
+        )
+        self.robot2_model = RobotModel(
+            x=0, y=0, theta=0, radius=0.2, wheel_R=0.5, wheel_r=0.05
+        )
+        self.robot3_model = RobotModel(
+            x=0, y=0, theta=0, radius=0.2, wheel_R=0.5, wheel_r=0.05
+        )
         self.ball = BallModel(x=0, y=0, radius=0.12, friction=0.98)
 
-        self.agent1 = RobotAgent('r1', self, self.robot1_model, "R1 Keeper", role="keeper")
-        self.agent2 = RobotAgent('r2', self, self.robot2_model, "R2 Striker", role="striker")
-        self.agent3 = RobotAgent('r3', self, self.robot3_model, "R3 Striker", role="striker")
+        self.agent1 = RobotAgent(
+            "r1", self, self.robot1_model, "R1 Keeper", role="keeper"
+        )
+        self.agent2 = RobotAgent(
+            "r2", self, self.robot2_model, "R2 Striker", role="striker"
+        )
+        self.agent3 = RobotAgent(
+            "r3", self, self.robot3_model, "R3 Striker", role="striker"
+        )
+
+    def _create_comms_bridges(self):
+        bridge_enabled_param = bool(
+            self.get_parameter("base_station_bridge.enabled").value
+        )
+        enabled = bridge_enabled_param and self.comms_mode == "protobuf"
+        if self.comms_mode == "standalone":
+            self.get_logger().info(
+                "Simulation comms mode: standalone (TCP/Protobuf Base Station bridge disabled)"
+            )
+        else:
+            self.get_logger().info(
+                "Simulation comms mode: protobuf (TCP servers r1/r2/r3 enabled)"
+                if enabled
+                else "Simulation comms mode: protobuf requested but base_station_bridge.enabled=false"
+            )
+        ports = {
+            "r1": self.get_parameter("base_station_bridge.port_r1").value,
+            "r2": self.get_parameter("base_station_bridge.port_r2").value,
+            "r3": self.get_parameter("base_station_bridge.port_r3").value,
+        }
+        for agent in [self.agent1, self.agent2, self.agent3]:
+            bridge = SimRobotCommsBridge(
+                node=self,
+                agent=agent,
+                port=ports[agent.name],
+                active=enabled,
+                world_state_getter=self._build_world_state_for_agent,
+                obstacle_getter=self._build_obstacle_msgs,
+                enemy_getter=lambda: self.enemies,
+                teammate_getter=self._get_teammate_agents,
+            )
+            bridge.start()
+            self.comms_bridges.append(bridge)
+
+    def _get_active_agents(self):
+        if self.mode == SimMode.REGIONAL:
+            return [self.agent2, self.agent3]
+        return [self.agent1, self.agent2, self.agent3]
+
+    def _get_teammate_agents(self, agent: RobotAgent):
+        return [ally for ally in self._get_active_agents() if ally.name != agent.name]
 
     def _setup_mode(self, mode: SimMode):
         """Reset posisi robot, bola, enemy, dan obstacle sesuai mode."""
@@ -299,7 +465,11 @@ class SimulationNode(Node):
 
             # Regional: hanya r2 dan r3
             # r1 disabled (posisi di luar lapangan atau tidak aktif)
-            self.robot1_model.x, self.robot1_model.y, self.robot1_model.theta = -10, -10, 0
+            self.robot1_model.x, self.robot1_model.y, self.robot1_model.theta = (
+                -10,
+                -10,
+                0,
+            )
             x2, y2, th2 = cfg.robot1_start  # r2 ambil posisi robot1_start
             x3, y3, th3 = cfg.robot2_start  # r3 ambil posisi robot2_start
             bx, by = cfg.kickoff_position
@@ -329,15 +499,21 @@ class SimulationNode(Node):
             e2x, e2y, e2th = cfg.enemy2_start
             e3x, e3y, e3th = cfg.enemy3_start
             self.enemies = [
-                EnemyRobot("e1",
-                           RobotModel(e1x, e1y, e1th, radius=0.2, wheel_R=0.5, wheel_r=0.05),
-                           "Enemy 1"),
-                EnemyRobot("e2",
-                           RobotModel(e2x, e2y, e2th, radius=0.2, wheel_R=0.5, wheel_r=0.05),
-                           "Enemy 2"),
-                EnemyRobot("e3",
-                           RobotModel(e3x, e3y, e3th, radius=0.2, wheel_R=0.5, wheel_r=0.05),
-                           "Enemy 3"),
+                EnemyRobot(
+                    "e1",
+                    RobotModel(e1x, e1y, e1th, radius=0.2, wheel_R=0.5, wheel_r=0.05),
+                    "Enemy 1",
+                ),
+                EnemyRobot(
+                    "e2",
+                    RobotModel(e2x, e2y, e2th, radius=0.2, wheel_R=0.5, wheel_r=0.05),
+                    "Enemy 2",
+                ),
+                EnemyRobot(
+                    "e3",
+                    RobotModel(e3x, e3y, e3th, radius=0.2, wheel_R=0.5, wheel_r=0.05),
+                    "Enemy 3",
+                ),
             ]
 
             # Nasional: tidak ada obstacle default
@@ -345,26 +521,32 @@ class SimulationNode(Node):
 
         # Reset robot positions
         if mode == SimMode.NASIONAL:
-            self.robot1_model.x, self.robot1_model.y, self.robot1_model.theta = x1, y1, th1
-        self.robot1_model.vx = self.robot1_model.vy = self.robot1_model.omega = 0.0
+            self.robot1_model.x, self.robot1_model.y, self.robot1_model.theta = (
+                x1,
+                y1,
+                th1,
+            )
+        self.robot1_model.reset_velocity()
         self.robot1_model.is_gripped = False
         self.robot1_model.deactivate_dribbler()
         self.agent1.is_stopped = False
 
         self.robot2_model.x, self.robot2_model.y, self.robot2_model.theta = x2, y2, th2
-        self.robot2_model.vx = self.robot2_model.vy = self.robot2_model.omega = 0.0
+        self.robot2_model.reset_velocity()
         self.robot2_model.is_gripped = False
         self.robot2_model.deactivate_dribbler()
         self.agent2.is_stopped = False
 
         self.robot3_model.x, self.robot3_model.y, self.robot3_model.theta = x3, y3, th3
-        self.robot3_model.vx = self.robot3_model.vy = self.robot3_model.omega = 0.0
+        self.robot3_model.reset_velocity()
         self.robot3_model.is_gripped = False
         self.robot3_model.deactivate_dribbler()
         self.agent3.is_stopped = False
 
-        # Reset ball
+        # Reset ball and role assignment state
         self.ball.set_position(bx, by)
+        self.dynamic_roles = {}
+        self._last_striker_name = None
 
     def switch_mode(self, new_mode: SimMode):
         if new_mode != self.mode:
@@ -388,7 +570,8 @@ class SimulationNode(Node):
 
             if target:
                 target.model.set_velocity(
-                    msg.local_nav.x, msg.local_nav.y, msg.local_nav.theta)
+                    msg.local_nav.x, msg.local_nav.y, msg.local_nav.theta
+                )
                 target.set_strategy_info(msg.strategy_name, msg.present_state)
 
     # ------------------------------------------------------------------
@@ -397,14 +580,23 @@ class SimulationNode(Node):
 
     def _update_simulation(self):
         Ts = self.Ts
-        
+
         # Update ally robots
-        agents = [self.agent1, self.agent2, self.agent3]
-        if self.mode == SimMode.REGIONAL:
-            agents = [self.agent2, self.agent3]  # Skip r1 di regional
-        
+        agents = self._get_active_agents()
+
+        previous_velocities = {
+            agent: (agent.model.vx, agent.model.vy, agent.model.omega)
+            for agent in agents
+        }
+
         for agent in agents:
             agent.model.update(Ts)
+            prev_vx, prev_vy, prev_omega = previous_velocities[agent]
+            agent.self_acceleration = Pose2D(
+                x=(agent.model.vx - prev_vx) / Ts,
+                y=(agent.model.vy - prev_vy) / Ts,
+                theta=(agent.model.omega - prev_omega) / Ts,
+            )
 
         # Update enemies
         for enemy in self.enemies:
@@ -430,7 +622,7 @@ class SimulationNode(Node):
                 dx = self.ball.x - m.x
                 dy = self.ball.y - m.y
                 dist = math.hypot(dx, dy)
-                
+
                 # Cek jarak center-to-center
                 if dist < m.radius + self.ball.radius + 0.03:  # Tambah toleransi
                     # Cek apakah bola di depan robot (dalam "mulut" dribbler)
@@ -439,7 +631,7 @@ class SimulationNode(Node):
                     # Transform bola ke robot frame
                     forward = dx * cos_th + dy * sin_th  # X robot (maju)
                     lateral = -dx * sin_th + dy * cos_th  # Y robot (lateral)
-                    
+
                     # Bola harus di depan (forward > 0) dan tidak terlalu samping
                     if forward > 0 and abs(lateral) < m.radius * 0.8:
                         self.ball.grip_to(m)
@@ -449,6 +641,8 @@ class SimulationNode(Node):
         # Check for goals (update scoreboard)
         self._check_goals()
 
+        self._update_dynamic_roles()
+        self._enforce_field_bounds()
         self._publish_world_states()
 
     # ------------------------------------------------------------------
@@ -458,7 +652,7 @@ class SimulationNode(Node):
     def _check_goals(self):
         """Cek apakah bola melewati gawang dan update scoreboard."""
         bx, by = self.ball.x, self.ball.y
-        
+
         if self.mode == SimMode.REGIONAL:
             # Regional: hanya team score, gawang di X=0 (kiri), Y antara 3-5
             f = self.field_cfg
@@ -466,36 +660,194 @@ class SimulationNode(Node):
                 if f.goal_line_y1 <= by <= f.goal_line_y2:
                     # Goal!
                     self.renderer.team_score += 1
-                    self.get_logger().info(f"GOAL! Team score: {self.renderer.team_score}")
+                    self.get_logger().info(
+                        f"GOAL! Team score: {self.renderer.team_score}"
+                    )
                     # Reset bola ke kickoff
                     self.ball.set_position(*f.kickoff_position)
-        
+
         else:  # NASIONAL
             # Nasional: team vs enemy
             # Team gawang di x=0, enemy gawang di x=12
             f = self.field_cfg
-            
+
             # Team mencetak gol (bola masuk gawang enemy di x=12)
             if bx > f.length + 0.1:
                 if f.goal_right_line_y1 <= by <= f.goal_right_line_y2:
                     self.renderer.team_score += 1
                     self.get_logger().info(
-                        f"GOAL! Team scores! {self.renderer.team_score} - {self.renderer.enemy_score}")
+                        f"GOAL! Team scores! {self.renderer.team_score} - {self.renderer.enemy_score}"
+                    )
                     self.ball.set_position(*f.kickoff_position)
-            
+
             # Enemy mencetak gol (bola masuk gawang team di x=0)
             elif bx < -0.1:
                 if f.goal_left_line_y1 <= by <= f.goal_left_line_y2:
                     self.renderer.enemy_score += 1
                     self.get_logger().info(
-                        f"GOAL! Enemy scores! {self.renderer.team_score} - {self.renderer.enemy_score}")
+                        f"GOAL! Enemy scores! {self.renderer.team_score} - {self.renderer.enemy_score}"
+                    )
                     self.ball.set_position(*f.kickoff_position)
+
+    # ------------------------------------------------------------------
+    # Dynamic role + field constraints
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _angle_diff(a: float, b: float) -> float:
+        return math.atan2(math.sin(a - b), math.cos(a - b))
+
+    def _agent_is_available_for_role(self, agent: RobotAgent) -> bool:
+        bs = agent.last_base_station
+        if agent.role == "keeper":
+            return False
+        if agent.is_stopped:
+            return False
+        if bs is not None and bs.sent_off:
+            return False
+        return True
+
+    def _role_cost(self, agent: RobotAgent) -> tuple[float, float]:
+        model = agent.model
+        dx = self.ball.x - model.x
+        dy = self.ball.y - model.y
+        distance = math.hypot(dx, dy)
+        bearing = math.atan2(dy, dx)
+        heading_error = abs(self._angle_diff(bearing, model.theta)) / math.pi
+        cost = (
+            self.role_distance_weight * distance
+            + self.role_angle_weight * heading_error
+        )
+        return cost, distance
+
+    def _update_dynamic_roles(self):
+        agents = self._get_active_agents()
+        roles = {agent.name: WorldState.ROLE_DEFENDER for agent in agents}
+
+        # Kiper tetap statis dan tidak ikut perebutan R1/R2/R3.
+        for agent in agents:
+            if agent.role == "keeper":
+                roles[agent.name] = WorldState.ROLE_GOALKEEPER
+
+        # Jika Base Station/RefBox memberi restart lawan, semua robot lapangan defensif.
+        if any(
+            agent.last_base_station is not None
+            and agent.last_base_station.restart_type != WorldState.RESTART_NONE
+            and not agent.last_base_station.restart_for_us
+            for agent in agents
+        ):
+            for agent in agents:
+                if agent.role != "keeper":
+                    roles[agent.name] = "DEFEND_REACTIVE"
+            self.dynamic_roles = roles
+            return
+
+        ranked = []
+        for agent in agents:
+            if not self._agent_is_available_for_role(agent):
+                if (
+                    agent.last_base_station is not None
+                    and agent.last_base_station.sent_off
+                ):
+                    roles[agent.name] = "SENT_OFF"
+                continue
+            cost, distance = self._role_cost(agent)
+            ranked.append((cost, distance, agent))
+
+        ranked.sort(key=lambda item: (item[0], item[2].name))
+        if not ranked:
+            self.dynamic_roles = roles
+            return
+
+        # Hysteresis: striker lama dipertahankan jika kandidat baru tidak unggul
+        # minimal 25 cm dari sisi jarak ke bola.
+        striker = ranked[0][2]
+        previous = next(
+            (item for item in ranked if item[2].name == self._last_striker_name), None
+        )
+        if previous is not None and previous[2] is not striker:
+            best_distance = ranked[0][1]
+            previous_distance = previous[1]
+            if (previous_distance - best_distance) <= self.role_hysteresis_m:
+                striker = previous[2]
+
+        ordered_agents = [striker] + [
+            item[2] for item in ranked if item[2] is not striker
+        ]
+
+        own_restart = any(
+            agent.last_base_station is not None
+            and agent.last_base_station.restart_type != WorldState.RESTART_NONE
+            and agent.last_base_station.restart_for_us
+            for agent in agents
+        )
+        role_sequence = (
+            ["SET_PIECE_EXECUTOR", WorldState.ROLE_SUPPORTER, WorldState.ROLE_DEFENDER]
+            if own_restart
+            else [
+                WorldState.ROLE_STRIKER,
+                WorldState.ROLE_SUPPORTER,
+                WorldState.ROLE_DEFENDER,
+            ]
+        )
+        for index, agent in enumerate(ordered_agents):
+            roles[agent.name] = role_sequence[min(index, len(role_sequence) - 1)]
+
+        self._last_striker_name = striker.name
+        self.dynamic_roles = roles
+
+    def _enforce_field_bounds(self):
+        if self.field_cfg is None:
+            return
+        max_x = float(
+            self.field_cfg.length
+            if self.mode == SimMode.NASIONAL
+            else self.field_cfg.width
+        )
+        max_y = float(
+            self.field_cfg.width
+            if self.mode == SimMode.NASIONAL
+            else self.field_cfg.length
+        )
+        margin = 0.02
+
+        for model in [agent.model for agent in self._get_active_agents()] + [
+            enemy.model for enemy in self.enemies
+        ]:
+            model.x = min(
+                max(model.x, model.radius + margin), max_x - model.radius - margin
+            )
+            model.y = min(
+                max(model.y, model.radius + margin), max_y - model.radius - margin
+            )
+
+        self.ball.x = min(max(self.ball.x, self.ball.radius), max_x - self.ball.radius)
+        self.ball.y = min(max(self.ball.y, self.ball.radius), max_y - self.ball.radius)
 
     # ------------------------------------------------------------------
     # World state publisher
     # ------------------------------------------------------------------
 
-    def _publish_world_states(self):
+    def _apply_base_station_context(self, ws: WorldState, agent: RobotAgent):
+        bs = agent.last_base_station
+        if bs is None:
+            ws.active_control = WorldState.ACTIVE_CONTROL_START
+            ws.match_phase = WorldState.MATCH_PHASE_WELCOME
+            ws.restart_type = WorldState.RESTART_NONE
+            ws.restart_for_us = False
+            ws.defending_side = WorldState.FIELD_SIDE_LEFT
+            ws.sent_off = False
+            return
+
+        ws.timestamp = bs.timestamp
+        ws.active_control = bs.active_control
+        ws.match_phase = bs.match_phase
+        ws.restart_type = bs.restart_type
+        ws.restart_for_us = bs.restart_for_us
+        ws.defending_side = bs.defending_side
+        ws.sent_off = bs.sent_off
+
+    def _build_world_state_for_agent(self, agent: RobotAgent) -> WorldState:
         obs_list = self._build_obstacle_msgs()
         enemy_msgs = self._build_enemy_msgs()
 
@@ -503,74 +855,74 @@ class SimulationNode(Node):
         ball_angle = self.ball.angle
         ball_speed = self.ball.speed
 
-        # Hitung bola_vel dan bola_dir (world frame)
         bvx = ball_speed * math.cos(ball_angle)
         bvy = ball_speed * math.sin(ball_angle)
         bdn_x = math.cos(ball_angle) if ball_speed > 1e-6 else 0.0
         bdn_y = math.sin(ball_angle) if ball_speed > 1e-6 else 0.0
 
-        agents = [self.agent1, self.agent2, self.agent3]
-        if self.mode == SimMode.REGIONAL:
-            agents = [self.agent2, self.agent3]
+        m = agent.model
+        ws = WorldState()
+        ws.timestamp = self.get_clock().now().to_msg()
+        self._apply_base_station_context(ws, agent)
+        ws.robot_name = agent.name
+        ws.robot_role = agent.role
+        ws.is_goalkeeper = agent.role == "keeper"
+        ws.dynamic_role = self.dynamic_roles.get(agent.name, WorldState.ROLE_DEFENDER)
 
-        for agent in agents:
-            m = agent.model
+        ws.self_pose = Pose2D(x=m.x, y=m.y, theta=m.theta)
+        ws.self_velocity = Pose2D(x=m.vx, y=m.vy, theta=m.omega)
+        ws.self_acceleration = agent.self_acceleration
 
-            ws = WorldState()
-            ws.robot_name = agent.name
-            ws.robot_role = agent.role
+        dx = bx - m.x
+        dy = by - m.y
+        cos_th = math.cos(m.theta)
+        sin_th = math.sin(m.theta)
+        ball_lateral = -dx * sin_th + dy * cos_th
+        ball_forward = dx * cos_th + dy * sin_th
+        ball_bearing = math.atan2(ball_lateral, ball_forward)
 
-            # Pose diri
-            ws.posisi_diri = Pose2D(x=m.x, y=m.y, theta=m.theta)
+        ws.ball_pose = Pose2D(x=ball_lateral, y=ball_forward, theta=ball_bearing)
+        ws.ball_velocity = Pose2D(x=bvx, y=bvy, theta=0.0)
+        ws.ball_direction = Pose2D(x=bdn_x, y=bdn_y, theta=0.0)
+        ws.is_ball_visible = True
+        ws.is_ball_gripped = m.is_gripped
+        ws.is_ready = m.is_ready
+        ws.robot_state = agent.current_state
+        ws.obstacles = obs_list
 
-            # State velocity (body frame)
-            ws.state_vel = Pose2D(x=m.vx, y=m.vy, theta=m.omega)
+        teammates = []
+        for ally in self._get_teammate_agents(agent):
+            ally_msg = RobotMsg()
+            ally_msg.robot_pose = Pose2D(
+                x=ally.model.x, y=ally.model.y, theta=ally.model.theta
+            )
+            ally_msg.robot_vel = Pose2D(
+                x=ally.model.vx, y=ally.model.vy, theta=ally.model.omega
+            )
+            ally_msg.robot_role = self.dynamic_roles.get(ally.name, ally.role)
+            ally_msg.is_ready = ally.model.is_ready
+            ally_msg.robot_state = ally.current_state
+            teammates.append(ally_msg)
+        ws.teammates = teammates
+        if teammates:
+            ws.nearest_teammate = teammates[0]
 
-            # Posisi bola dalam robot frame (seperti output RealSense)
-            _dx = bx - m.x
-            _dy = by - m.y
-            _cos = math.cos(m.theta)
-            _sin = math.sin(m.theta)
-            _ball_lateral = -_dx * _sin + _dy * _cos   # sumbu Y robot (+kiri)
-            _ball_forward =  _dx * _cos + _dy * _sin   # sumbu X robot (maju)
-            _ball_bearing = math.atan2(_ball_lateral, _ball_forward)  # sudut bearing
-            ws.bola = Pose2D(x=_ball_lateral, y=_ball_forward, theta=_ball_bearing)
+        if self.mode == SimMode.NASIONAL:
+            ws.enemies = enemy_msgs
+        elif (
+            agent.last_base_station is not None and agent.last_base_station.enemy_robots
+        ):
+            ws.enemies = agent.last_base_station.enemy_robots
 
-            # Bola vel dan direction (world frame)
-            ws.bola_vel = Pose2D(x=bvx, y=bvy, theta=0.0)
-            ws.bola_dir = Pose2D(x=bdn_x, y=bdn_y, theta=0.0)
+        return ws
 
-            # Fix #1: is_visible selalu True (sim tidak punya occlusion)
-            ws.is_visible = True
-
-            # Fix is_ready root
-            ws.is_grip = m.is_gripped
-            ws.is_ready = m.is_ready
-            ws.obstacles = obs_list
-
-            # Tim list — dengan robot_vel
-            tim_list = []
-            for ally in agents:
-                if ally.name != agent.name:
-                    ally_msg = RobotMsg()
-                    ally_msg.robot_pose = Pose2D(
-                        x=ally.model.x, y=ally.model.y, theta=ally.model.theta)
-                    ally_msg.robot_vel = Pose2D(
-                        x=ally.model.vx, y=ally.model.vy, theta=ally.model.omega)
-                    ally_msg.robot_role = ally.role
-                    ally_msg.is_ready = ally.model.is_ready
-                    tim_list.append(ally_msg)
-            ws.tim = tim_list
-
-            # Fix #2: kawan — single field untuk regional (satu kawan)
-            if tim_list:
-                ws.kawan = tim_list[0]
-
-            # Enemy list (mode nasional)
-            if self.mode == SimMode.NASIONAL:
-                ws.enemy = enemy_msgs
-
+    def _publish_world_states(self):
+        for agent in self._get_active_agents():
+            ws = self._build_world_state_for_agent(agent)
             agent.world_state_pub.publish(ws)
+            for bridge in self.comms_bridges:
+                if bridge.agent is agent:
+                    bridge.publish_if_due()
 
     def _build_obstacle_msgs(self) -> list:
         """Build obstacle msgs hanya dari custom obstacles yang enabled."""
@@ -585,9 +937,11 @@ class SimulationNode(Node):
         for enemy in self.enemies:
             em = RobotMsg()
             em.robot_pose = Pose2D(
-                x=enemy.model.x, y=enemy.model.y, theta=enemy.model.theta)
+                x=enemy.model.x, y=enemy.model.y, theta=enemy.model.theta
+            )
             em.robot_vel = Pose2D(
-                x=enemy.model.vx, y=enemy.model.vy, theta=enemy.model.omega)
+                x=enemy.model.vx, y=enemy.model.vy, theta=enemy.model.omega
+            )
             em.robot_role = "enemy"
             em.is_ready = False
             msgs.append(em)
@@ -604,55 +958,57 @@ class SimulationNode(Node):
             robots = [self.robot2_model, self.robot3_model]
         return any(r.is_gripped for r in robots)
 
-    def _check_circle_collision(self, x1: float, y1: float, r1: float,
-                                x2: float, y2: float, r2: float) -> bool:
+    def _check_circle_collision(
+        self, x1: float, y1: float, r1: float, x2: float, y2: float, r2: float
+    ) -> bool:
         """Check if two circles collide."""
         dist = math.hypot(x2 - x1, y2 - y1)
         return dist < (r1 + r2)
 
-    def _resolve_circle_collision(self, obj1, obj2, r1: float, r2: float,
-                                  elasticity: float = 0.5):
+    def _resolve_circle_collision(
+        self, obj1, obj2, r1: float, r2: float, elasticity: float = 0.5
+    ):
         """Resolve collision between two circular objects."""
         dx = obj2.x - obj1.x
         dy = obj2.y - obj1.y
         dist = math.hypot(dx, dy)
-        
+
         if dist < 1e-6:
             return
-        
+
         # Normalize collision vector
         nx = dx / dist
         ny = dy / dist
-        
+
         # Get velocities (handle BallModel's speed/angle)
         if isinstance(obj1, BallModel):
             v1x = math.cos(obj1.angle) * obj1.speed
             v1y = math.sin(obj1.angle) * obj1.speed
         else:
             v1x, v1y = obj1.vx, obj1.vy
-        
+
         if isinstance(obj2, BallModel):
             v2x = math.cos(obj2.angle) * obj2.speed
             v2y = math.sin(obj2.angle) * obj2.speed
         else:
             v2x, v2y = obj2.vx, obj2.vy
-        
+
         # Relative velocity
         dvx = v2x - v1x
         dvy = v2y - v1y
-        
+
         # Velocity along collision normal
         dvn = dvx * nx + dvy * ny
-        
+
         # Do not resolve if objects are separating
         if dvn >= 0:
             return
-        
+
         # Get masses
-        m1 = getattr(obj1, 'mass', 1.0)
-        m2 = getattr(obj2, 'mass', 1.0)
+        m1 = getattr(obj1, "mass", 1.0)
+        m2 = getattr(obj2, "mass", 1.0)
         total_mass = m1 + m2
-        
+
         # Separate overlapping objects (weighted by mass)
         overlap = (r1 + r2) - dist
         if overlap > 0:
@@ -662,14 +1018,14 @@ class SimulationNode(Node):
             obj1.y -= ny * sep1
             obj2.x += nx * sep2
             obj2.y += ny * sep2
-        
+
         # Apply impulse (considering mass)
-        impulse = -(1 + elasticity) * dvn / (1.0/m1 + 1.0/m2)
-        
+        impulse = -(1 + elasticity) * dvn / (1.0 / m1 + 1.0 / m2)
+
         # Get masses
-        m1 = getattr(obj1, 'mass', 1.0)
-        m2 = getattr(obj2, 'mass', 1.0)
-        
+        m1 = getattr(obj1, "mass", 1.0)
+        m2 = getattr(obj2, "mass", 1.0)
+
         # Update velocities
         if isinstance(obj1, BallModel):
             v1x -= (impulse / m1) * nx
@@ -680,7 +1036,7 @@ class SimulationNode(Node):
         else:
             obj1.vx -= (impulse / m1) * nx
             obj1.vy -= (impulse / m1) * ny
-        
+
         if isinstance(obj2, BallModel):
             v2x += (impulse / m2) * nx
             v2y += (impulse / m2) * ny
@@ -691,36 +1047,53 @@ class SimulationNode(Node):
             obj2.vx += (impulse / m2) * nx
             obj2.vy += (impulse / m2) * ny
 
-    def _check_rect_collision(self, cx: float, cy: float, cr: float,
-                             rx: float, ry: float, rw: float, rh: float) -> bool:
+    def _check_rect_collision(
+        self,
+        cx: float,
+        cy: float,
+        cr: float,
+        rx: float,
+        ry: float,
+        rw: float,
+        rh: float,
+    ) -> bool:
         """Check if circle collides with rectangle (obstacle)."""
         # Find closest point on rectangle to circle center
         closest_x = max(rx, min(cx, rx + rw))
         closest_y = max(ry, min(cy, ry + rh))
-        
+
         # Calculate distance
         dist = math.hypot(cx - closest_x, cy - closest_y)
         return dist < cr
 
-    def _resolve_rect_collision(self, obj, cx: float, cy: float, cr: float,
-                               rx: float, ry: float, rw: float, rh: float,
-                               elasticity: float = 0.3):
+    def _resolve_rect_collision(
+        self,
+        obj,
+        cx: float,
+        cy: float,
+        cr: float,
+        rx: float,
+        ry: float,
+        rw: float,
+        rh: float,
+        elasticity: float = 0.3,
+    ):
         """Resolve collision between circle and rectangle."""
         # Find closest point on rectangle
         closest_x = max(rx, min(cx, rx + rw))
         closest_y = max(ry, min(cy, ry + rh))
-        
+
         dx = cx - closest_x
         dy = cy - closest_y
         dist = math.hypot(dx, dy)
-        
+
         if dist < 1e-6:
             # Circle center inside rectangle - push out in nearest direction
             edges = [
-                (cx - rx, -1, 0),           # left
-                (rx + rw - cx, 1, 0),       # right
-                (cy - ry, 0, -1),           # bottom
-                (ry + rh - cy, 0, 1),       # top
+                (cx - rx, -1, 0),  # left
+                (rx + rw - cx, 1, 0),  # right
+                (cy - ry, 0, -1),  # bottom
+                (ry + rh - cy, 0, 1),  # top
             ]
             min_edge = min(edges, key=lambda e: e[0])
             dx, dy = min_edge[1], min_edge[2]
@@ -731,25 +1104,25 @@ class SimulationNode(Node):
             dx /= dist
             dy /= dist
             overlap = cr - dist
-        
+
         if overlap > 0:
             # Push object out
             obj.x += dx * overlap
             obj.y += dy * overlap
-            
+
             # Get velocity (handle BallModel's speed/angle)
             if isinstance(obj, BallModel):
                 vx = math.cos(obj.angle) * obj.speed
                 vy = math.sin(obj.angle) * obj.speed
             else:
                 vx, vy = obj.vx, obj.vy
-            
+
             # Reflect velocity
             vn = vx * dx + vy * dy
             if vn < 0:
                 vx -= (1 + elasticity) * vn * dx
                 vy -= (1 + elasticity) * vn * dy
-                
+
                 # Update velocity
                 if isinstance(obj, BallModel):
                     obj.speed = math.hypot(vx, vy)
@@ -765,23 +1138,31 @@ class SimulationNode(Node):
         robots = [self.robot1_model, self.robot2_model, self.robot3_model]
         if self.mode == SimMode.REGIONAL:
             robots = [self.robot2_model, self.robot3_model]
-        
+
         # Add enemies
         all_robots = robots + [e.model for e in self.enemies]
-        
+
         # Robot-Robot collisions
         for i, r1 in enumerate(all_robots):
-            for r2 in all_robots[i+1:]:
-                if self._check_circle_collision(r1.x, r1.y, r1.radius,
-                                               r2.x, r2.y, r2.radius):
-                    self._resolve_circle_collision(r1, r2, r1.radius, r2.radius,
-                                                  elasticity=0.5)
-        
+            for r2 in all_robots[i + 1 :]:
+                if self._check_circle_collision(
+                    r1.x, r1.y, r1.radius, r2.x, r2.y, r2.radius
+                ):
+                    self._resolve_circle_collision(
+                        r1, r2, r1.radius, r2.radius, elasticity=0.5
+                    )
+
         # Robot-Ball collisions (when not gripped)
         if not self._is_ball_gripped():
             for robot in all_robots:
-                if self._check_circle_collision(robot.x, robot.y, robot.radius,
-                                               self.ball.x, self.ball.y, self.ball.radius):
+                if self._check_circle_collision(
+                    robot.x,
+                    robot.y,
+                    robot.radius,
+                    self.ball.x,
+                    self.ball.y,
+                    self.ball.radius,
+                ):
                     # Cek apakah robot memiliki dribbler aktif dan bola di depan
                     # Jika ya, kurangi elasticity drastis (bola "masuk" ke mulut robot)
                     dx = self.ball.x - robot.x
@@ -790,46 +1171,82 @@ class SimulationNode(Node):
                     sin_th = math.sin(robot.theta)
                     forward = dx * cos_th + dy * sin_th
                     lateral = -dx * sin_th + dy * cos_th
-                    
+
                     # Jika robot adalah ally dengan dribbler aktif DAN bola di depan
-                    is_front_collision = forward > 0 and abs(lateral) < robot.radius * 0.9
-                    has_dribbler = hasattr(robot, 'dribbler_active') and robot.dribbler_active
-                    
+                    is_front_collision = (
+                        forward > 0 and abs(lateral) < robot.radius * 0.9
+                    )
+                    has_dribbler = (
+                        hasattr(robot, "dribbler_active") and robot.dribbler_active
+                    )
+
                     if has_dribbler and is_front_collision:
                         # Collision sangat lembut (cekung) - bola "tertahan" di depan
-                        self._resolve_circle_collision(robot, self.ball,
-                                                      robot.radius, self.ball.radius,
-                                                      elasticity=0.05)  # Hampir tidak memantul
+                        self._resolve_circle_collision(
+                            robot,
+                            self.ball,
+                            robot.radius,
+                            self.ball.radius,
+                            elasticity=0.05,
+                        )  # Hampir tidak memantul
                     else:
                         # Collision normal untuk sisi/belakang robot atau robot tanpa dribbler
-                        self._resolve_circle_collision(robot, self.ball,
-                                                      robot.radius, self.ball.radius,
-                                                      elasticity=0.5)
-        
+                        self._resolve_circle_collision(
+                            robot,
+                            self.ball,
+                            robot.radius,
+                            self.ball.radius,
+                            elasticity=0.5,
+                        )
+
         # Robot-Obstacle and Ball-Obstacle collisions
         for obs in self.custom_obstacles:
             if not obs.enabled:
                 continue
-            
+
             half = obs.size / 2.0
             ox = obs.x - half
             oy = obs.y - half
-            
+
             # Robot-Obstacle
             for robot in all_robots:
-                if self._check_rect_collision(robot.x, robot.y, robot.radius,
-                                             ox, oy, obs.size, obs.size):
-                    self._resolve_rect_collision(robot, robot.x, robot.y, robot.radius,
-                                                ox, oy, obs.size, obs.size,
-                                                elasticity=0.3)
-            
+                if self._check_rect_collision(
+                    robot.x, robot.y, robot.radius, ox, oy, obs.size, obs.size
+                ):
+                    self._resolve_rect_collision(
+                        robot,
+                        robot.x,
+                        robot.y,
+                        robot.radius,
+                        ox,
+                        oy,
+                        obs.size,
+                        obs.size,
+                        elasticity=0.3,
+                    )
+
             # Ball-Obstacle
             if not self._is_ball_gripped():
-                if self._check_rect_collision(self.ball.x, self.ball.y, self.ball.radius,
-                                             ox, oy, obs.size, obs.size):
-                    self._resolve_rect_collision(self.ball, self.ball.x, self.ball.y,
-                                                self.ball.radius, ox, oy, obs.size, obs.size,
-                                                elasticity=0.6)
+                if self._check_rect_collision(
+                    self.ball.x,
+                    self.ball.y,
+                    self.ball.radius,
+                    ox,
+                    oy,
+                    obs.size,
+                    obs.size,
+                ):
+                    self._resolve_rect_collision(
+                        self.ball,
+                        self.ball.x,
+                        self.ball.y,
+                        self.ball.radius,
+                        ox,
+                        oy,
+                        obs.size,
+                        obs.size,
+                        elasticity=0.6,
+                    )
 
     # ------------------------------------------------------------------
     # Obstacle management
@@ -872,7 +1289,7 @@ class SimulationNode(Node):
         renderer = self.renderer
         dragging_enemy: EnemyRobot | None = None
         dragging_obstacle: DraggableObstacle | None = None
-        
+
         # State untuk input koordinat obstacle
         input_mode = False
         input_text = ""
@@ -887,7 +1304,7 @@ class SimulationNode(Node):
                         # Mode input koordinat obstacle
                         if event.key == pygame.K_RETURN:
                             try:
-                                parts = input_text.split(',')
+                                parts = input_text.split(",")
                                 if len(parts) == 2:
                                     x = float(parts[0].strip())
                                     y = float(parts[1].strip())
@@ -920,20 +1337,27 @@ class SimulationNode(Node):
                         new_mode = renderer.check_mode_button_click(event.pos)
                         new_tab = renderer.check_tab_click(event.pos)
                         robot_idx = renderer.check_robot_selector_click(event.pos)
-                        
+
                         if new_mode is not None:
                             self.switch_mode(new_mode)
                         elif new_tab is not None:
                             renderer.active_sidebar_tab = new_tab
-                            renderer.sidebar_scroll_offset = 0 # Reset scroll on tab change
-                        elif robot_idx is not None and renderer.active_sidebar_tab == "WORLDSTATE":
+                            renderer.sidebar_scroll_offset = (
+                                0  # Reset scroll on tab change
+                            )
+                        elif (
+                            robot_idx is not None
+                            and renderer.active_sidebar_tab == "WORLDSTATE"
+                        ):
                             renderer.selected_robot_worldstate = robot_idx
                         # Cek wheel speed toggle
                         elif renderer.check_wheel_speed_toggle_click(event.pos):
                             renderer.show_wheel_speeds = not renderer.show_wheel_speeds
                         # Cek obstacle coords toggle
                         elif renderer.check_obs_coords_toggle_click(event.pos):
-                            renderer.show_obstacle_coords = not renderer.show_obstacle_coords
+                            renderer.show_obstacle_coords = (
+                                not renderer.show_obstacle_coords
+                            )
                         # Cek add obstacle button
                         elif renderer.check_add_obstacle_click(event.pos):
                             input_mode = True
@@ -945,11 +1369,15 @@ class SimulationNode(Node):
                                 if 0 <= del_idx < len(self.custom_obstacles):
                                     removed = self.custom_obstacles.pop(del_idx)
                                     self.get_logger().info(
-                                        f"Obstacle removed at ({removed.x:.2f}, {removed.y:.2f})")
+                                        f"Obstacle removed at ({removed.x:.2f}, {removed.y:.2f})"
+                                    )
                             else:
                                 # Cek obstacle checkbox clicks
-                                clicked_obs_idx = renderer.check_obstacle_checkbox_click(
-                                    event.pos, self.custom_obstacles)
+                                clicked_obs_idx = (
+                                    renderer.check_obstacle_checkbox_click(
+                                        event.pos, self.custom_obstacles
+                                    )
+                                )
                                 if clicked_obs_idx is not None:
                                     obs = self.custom_obstacles[clicked_obs_idx]
                                     obs.enabled = not obs.enabled
@@ -959,7 +1387,7 @@ class SimulationNode(Node):
                                     dragging_obstacle = self._find_obstacle_at(wx, wy)
                                     if dragging_obstacle is None:
                                         dragging_enemy = self._find_enemy_at(wx, wy)
-                
+
                 elif event.type == pygame.MOUSEWHEEL:
                     # Scroll sidebar
                     renderer.handle_scroll(event.y)
@@ -991,14 +1419,17 @@ class SimulationNode(Node):
 
             # Ally robots
             if self.mode == SimMode.NASIONAL:
-                renderer.draw_robot(self.robot1_model, label="R1", color=COLOR_ROBOT_BODY)
+                renderer.draw_robot(
+                    self.robot1_model, label="R1", color=COLOR_ROBOT_BODY
+                )
             renderer.draw_robot(self.robot2_model, label="R2", color=COLOR_ROBOT_BODY)
             renderer.draw_robot(self.robot3_model, label="R3", color=COLOR_ROBOT_BODY)
 
             # Enemy robots
             for enemy in self.enemies:
-                renderer.draw_robot(enemy.model, label=enemy.display_name,
-                                    color=COLOR_ENEMY_BODY)
+                renderer.draw_robot(
+                    enemy.model, label=enemy.display_name, color=COLOR_ENEMY_BODY
+                )
 
             # ── Scoreboard ──
             renderer.draw_scoreboard()
@@ -1074,12 +1505,16 @@ class SimulationNode(Node):
         elif key == pygame.K_SPACE:
             if self.robot2_model.is_gripped:
                 req = KickService.Request()
+                req.exec_mode = KickService.Request.GROUND
                 req.kick_power = 200
+                req.is_kick = True
                 self.agent2._handle_kick(req, KickService.Response())
         elif key == pygame.K_RETURN:
             if self.robot3_model.is_gripped:
                 req = KickService.Request()
+                req.exec_mode = KickService.Request.GROUND
                 req.kick_power = 200
+                req.is_kick = True
                 self.agent3._handle_kick(req, KickService.Response())
 
         # Dribbler toggle (A=r2, S=r3, D=r1)
@@ -1114,6 +1549,17 @@ class SimulationNode(Node):
 
         return running
 
+    def _send_strategy_change(self, strategy_name: str):
+        for bridge in self.comms_bridges:
+            if bridge.strategy_change_client.service_is_ready():
+                request = StrategyChange.Request()
+                request.new_strategy = strategy_name
+                bridge.strategy_change_client.call_async(request)
+                return
+        self.get_logger().warn(
+            f"StrategyChange service belum tersedia, gagal mengirim '{strategy_name}'"
+        )
+
     def _toggle_dribbler(self, agent: RobotAgent):
         """Toggle dribbler untuk robot."""
         if agent.model.dribbler_active:
@@ -1138,21 +1584,27 @@ class SimulationNode(Node):
 # Entry point
 # ======================================================================
 
+
 def main():
     rclpy.init()
+    node = None
     try:
         node = SimulationNode()
         node.get_logger().info("Starting simulation...")
         node.run()
     except Exception as e:
         import traceback
+
         print(f"Error in simulation: {e}")
         traceback.print_exc()
     finally:
+        if node is not None:
+            node.shutdown()
+            node.destroy_node()
         if rclpy.ok():
             rclpy.shutdown()
             print("ROS2 shutdown complete")
 
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     main()

@@ -1,223 +1,250 @@
 # fukuro_sim2d
 
-Simulator 2D untuk robot omniwheel berbasis ROS2 dan Pygame. Package ini menyediakan lingkungan simulasi untuk pengembangan dan testing strategi robot sepak bola.
+Simulator 2D robot omniwheel berbasis ROS 2 + Pygame untuk menguji strategi Fukuro. Simulator dapat berjalan dalam dua mode komunikasi:
 
-## Deskripsi
+1. **Standalone** — hanya ROS 2 topic/service internal, tanpa Base Station.
+2. **Protobuf/Base Station** — membuka 3 TCP port dan bertindak seperti 3 robot fisik untuk `fukuro_base_station`.
 
-fukuro_sim2d adalah simulator robotik 2D yang dirancang untuk mensimulasikan pergerakan robot omniwheel dalam pertandingan sepak bola robot. Simulator ini menggunakan Pygame untuk visualisasi dan terintegrasi penuh dengan ROS2 untuk komunikasi antar komponen.
+## Fitur
 
-### Fitur Utama
+- Simulasi fisika robot omniwheel 3 roda dengan limit kecepatan dan akselerasi.
+- Simulasi bola dengan friction, collision, kick, dan dribbler/grip.
+- Mode lapangan `regional` dan `nasional`.
+- Dynamic Role Reassignment sederhana di simulator (`R1_STRIKER`, `R2_SUPPORTER`, `R3_DEFENDER`, dll.).
+- Publikasi `WorldState` per robot:
+  - `/r1/fukuro/world_model/state`
+  - `/r2/fukuro/world_model/state`
+  - `/r3/fukuro/world_model/state`
+- Bridge TCP/Protobuf opsional untuk Base Station:
+  - `r1 → 8081`
+  - `r2 → 8082`
+  - `r3 → 8083`
 
-- Simulasi fisika robot omniwheel 3 roda dengan kinematika yang realistis
-- Model fisika bola dengan friction, collision, dan dribbling
-- Dua mode kompetisi: Regional dan Nasional
-- Visualisasi real-time dengan Pygame
-- Drag-and-drop untuk mengatur posisi bola dan obstacle
-- Checkbox untuk enable/disable obstacle secara interaktif
-- Integrasi lengkap dengan ROS2 topics dan services
-
-## Mode Kompetisi
-
-### Regional (8m x 6m)
-- Lapangan setengah dengan gawang di sisi bawah
-- 2 robot aktif (robot2 dan robot3)
-- 9 obstacle statis yang dapat diatur posisinya
-- Sistem koordinat: origin (0,0) di pojok kiri atas, X ke kanan, Y ke bawah
-
-### Nasional (12m x 8m)
-- Lapangan penuh dengan gawang di kiri dan kanan
-- 3 robot tim sendiri (r1=keeper, r2=striker, r3=striker)
-- 3 robot lawan
-- Sistem koordinat: origin (0,0) di pojok kiri bawah, X ke kanan, Y ke atas
-
-## Instalasi
-
-### Prasyarat
-
-- ROS2 (Humble atau lebih baru)
-- Python 3.8+
-- Pygame
-- NumPy
-
-### Build Package
+## Build
 
 ```bash
-cd ~/ros2_fukuro_strategy
-colcon build --packages-select fukuro_sim2d
+cd ~/ros2_fukuro
+colcon build --packages-select fukuro_sim2d fukuro_sim2d_planner fukuro_behavior_tree fukuro_pathplanning
 source install/setup.bash
 ```
 
-### Install Dependencies
+Dependency Python:
 
 ```bash
-pip install pygame numpy
+pip install pygame numpy protobuf
 ```
 
-## Penggunaan
+## Mode 1 — Standalone
 
-### Menjalankan Simulator
+Gunakan mode ini jika ingin menjalankan simulator + behavior tree tanpa `fukuro_base_station` dan tanpa RefBox.
+
+### Jalankan semua node via script
 
 ```bash
-ros2 run fukuro_sim2d simulation
+cd ~/ros2_fukuro
+source install/setup.bash
+./assets/scripts/run_base_station_bridge.sh sim \
+  --sim-mode nasional \
+  --sim-comms standalone
 ```
 
-### Kontrol Interaktif
+Mode ini menjalankan:
 
-#### Mouse
-- **Klik kiri + drag** pada bola: memindahkan posisi bola
-- **Klik kiri + drag** pada obstacle: memindahkan obstacle
-- **Klik kanan** pada obstacle: toggle enable/disable
+- `fukuro_pathplanning/navigator_node`
+- `fukuro_behavior_tree/strategy_node`
+- `fukuro_sim2d_planner/global_planner_node`
+- `fukuro_sim2d_planner/local_controller_node`
+- `fukuro_sim2d/simulation`
 
-#### Keyboard
-- **M**: Toggle mode (Regional/Nasional)
-- **R**: Reset simulasi
-- **SPACE**: Toggle pause
-- **ESC**: Keluar dari simulator
+TCP protobuf ke Base Station **tidak dibuka**.
 
-### ROS2 Topics
+### Mulai behavior tree manual
 
-#### Published Topics
-
-- `/world_state` (WorldState): State dunia simulasi termasuk posisi robot, bola, dan obstacle
-- `/strategy_state` (StrategyState): State strategi untuk koordinasi robot
-
-#### Subscribed Topics
-
-Mode Regional (robot2 dan robot3):
-- `/robot2/cmd_vel` (Twist): Perintah kecepatan untuk robot2
-- `/robot3/cmd_vel` (Twist): Perintah kecepatan untuk robot3
-
-Mode Nasional (robot1, robot2, robot3):
-- `/robot1/cmd_vel` (Twist): Perintah kecepatan untuk keeper
-- `/robot2/cmd_vel` (Twist): Perintah kecepatan untuk striker 1
-- `/robot3/cmd_vel` (Twist): Perintah kecepatan untuk striker 2
-
-Topik lainnya:
-- `/strategy/change` (String): Perintah perubahan strategi (format JSON)
-
-### ROS2 Services
-
-- `/robot{N}/dribbler` (DribblerControl): Kontrol dribbler on/off
-- `/robot{N}/kick` (KickService): Perintah kick dengan power
-- `/robot{N}/set_ready` (SetReady): Set ready state robot
-
-## Struktur Package
-
-```
-fukuro_sim2d/
-├── fukuro_sim2d/
-│   ├── __init__.py
-│   ├── simulation_node.py          # Node ROS2 utama
-│   ├── objects/
-│   │   ├── __init__.py
-│   │   └── field.py                # Konfigurasi lapangan
-│   ├── physics/
-│   │   ├── __init__.py
-│   │   ├── ball_model.py           # Model fisika bola
-│   │   ├── omni3_kinematics.py     # Kinematika omniwheel
-│   │   └── robot_model.py          # Model fisika robot
-│   └── render/
-│       ├── __init__.py
-│       ├── frame_converter.py      # Konversi koordinat
-│       └── renderer.py             # Rendering Pygame
-├── resource/
-├── package.xml
-├── setup.py
-├── setup.cfg
-└── README.md
-```
-
-## Parameter Fisika
-
-### Robot
-- Radius: 0.1 m
-- Massa: 5.0 kg
-- Max velocity linear: 2.0 m/s
-- Max velocity angular: 3.0 rad/s
-- Wheel positions: 120 derajat spacing
-
-### Bola
-- Radius: 0.075 m
-- Massa: 0.45 kg
-- Friction coefficient: 0.15
-- Restitution (pantul): 0.7
-
-### Obstacle
-- Ukuran default: 0.4 m x 0.4 m
-- Dapat diaktifkan/nonaktifkan secara interaktif
-
-## Contoh Penggunaan
-
-### Menggerakkan Robot
+Karena tidak ada RefBox/Base Station, ubah mode BT lewat ROS service:
 
 ```bash
-# Gerakkan robot2 maju
-ros2 topic pub /robot2/cmd_vel geometry_msgs/msg/Twist "{linear: {x: 1.0, y: 0.0, z: 0.0}, angular: {x: 0.0, y: 0.0, z: 0.0}}"
+ros2 service call /fukuro/strategy/change fukuro_interface/srv/StrategyChange "{new_strategy: 'playing'}"
 ```
 
-### Mengaktifkan Dribbler
+Stop:
 
 ```bash
-ros2 service call /robot2/dribbler fukuro_interface/srv/DribblerControl "{enable: true}"
+ros2 service call /fukuro/strategy/change fukuro_interface/srv/StrategyChange "{new_strategy: 'stop'}"
 ```
 
-### Melakukan Kick
+Homing:
 
 ```bash
-ros2 service call /robot2/kick fukuro_interface/srv/KickService "{power: 100}"
+ros2 service call /fukuro/strategy/homing std_srvs/srv/SetBool "{data: true}"
 ```
 
-### Mengganti Strategi
+### Jalankan simulator saja standalone
 
 ```bash
-ros2 topic pub --once /strategy/change std_msgs/msg/String "data: '{\"mode\": \"kickoff_kanan\"}'"
+ros2 run fukuro_sim2d simulation --ros-args \
+  -p sim_mode:=nasional \
+  -p sim_comms_mode:=standalone \
+  -p base_station_bridge.enabled:=false
 ```
 
-## Koordinat World Frame
+## Mode 2 — Protobuf / Base Station / RefBox
 
-### Regional
-- Origin (0, 0) berada di pojok kiri atas (samping gawang)
-- Sumbu X mengarah ke kanan (0 - 8 m)
-- Sumbu Y mengarah ke bawah (0 - 6 m)
-- Gawang berada di Y = 6.0 m
+Gunakan mode ini jika ingin `fukuro_base_station` menerima RefBox command lalu mengirim `Protobuf_From_BS` ke simulator seperti ke robot fisik.
 
-### Nasional
-- Origin (0, 0) berada di pojok kiri bawah
-- Sumbu X mengarah ke kanan (0 - 12 m)
-- Sumbu Y mengarah ke atas (0 - 8 m)
-- Gawang kiri di X = 0, gawang kanan di X = 12 m
+### Jalankan ROS simulator stack
+
+```bash
+cd ~/ros2_fukuro
+source install/setup.bash
+./assets/scripts/run_base_station_bridge.sh sim \
+  --sim-mode nasional \
+  --sim-comms protobuf
+```
+
+Simulator akan membuka:
+
+| Robot | Port | Arah ke Base Station |
+|---|---:|---|
+| `r1` | `8081` | `Protobuf_From_ROS` keluar, `Protobuf_From_BS` masuk |
+| `r2` | `8082` | `Protobuf_From_ROS` keluar, `Protobuf_From_BS` masuk |
+| `r3` | `8083` | `Protobuf_From_ROS` keluar, `Protobuf_From_BS` masuk |
+
+Cek port:
+
+```bash
+ss -ltnp | grep -E '8081|8082|8083'
+```
+
+### Hubungkan Base Station
+
+Di `fukuro_base_station`, tambahkan/koneksikan robot ke host simulator:
+
+Jika Base Station satu PC dengan simulator:
+
+```text
+r1: 127.0.0.1:8081
+r2: 127.0.0.1:8082
+r3: 127.0.0.1:8083
+```
+
+Jika beda PC, gunakan IP PC simulator, contoh:
+
+```text
+r1: 192.168.1.12:8081
+r2: 192.168.1.12:8082
+r3: 192.168.1.12:8083
+```
+
+Cek koneksi established:
+
+```bash
+ss -tnp state established | grep -E '8081|8082|8083'
+```
+
+### Flow command RefBox
+
+1. RefBox mengirim JSON command ke Base Station (`28097`).
+2. Base Station menerjemahkan command ke `Protobuf_From_BS`.
+3. Simulator menerima packet di port `8081/8082/8083`.
+4. Simulator publish `/rX/fukuro/comms/base_station` dan update `WorldState`.
+5. Behavior tree membaca `WorldState.dynamic_role`, `active_control`, `restart_type`, dll.
+
+Contoh cek packet Base Station yang diterima simulator:
+
+```bash
+ros2 topic echo /r2/fukuro/comms/base_station --once
+```
+
+Untuk `START`, nilai penting:
+
+```yaml
+active_control: 2
+```
+
+Untuk kickoff restart, nilai penting:
+
+```yaml
+restart_type: 1
+restart_for_us: true/false
+```
+
+## Parameter penting
+
+| Parameter | Nilai | Default | Keterangan |
+|---|---|---|---|
+| `sim_mode` | `regional`, `nasional` | `regional` | Mode lapangan |
+| `sim_comms_mode` | `standalone`, `protobuf` | `protobuf` | Mode komunikasi simulator |
+| `base_station_bridge.enabled` | `true`, `false` | `true` | Backward-compatible switch TCP bridge |
+| `base_station_bridge.port_r1` | integer | `8081` | Port robot r1 |
+| `base_station_bridge.port_r2` | integer | `8082` | Port robot r2 |
+| `base_station_bridge.port_r3` | integer | `8083` | Port robot r3 |
+
+## Topic utama
+
+Published:
+
+```text
+/r1/fukuro/world_model/state
+/r2/fukuro/world_model/state
+/r3/fukuro/world_model/state
+/r1/fukuro/comms/base_station   # hanya menerima data setelah Base Station kirim packet
+/r2/fukuro/comms/base_station
+/r3/fukuro/comms/base_station
+```
+
+Subscribed:
+
+```text
+/r1/cmd_vel
+/r2/cmd_vel
+/r3/cmd_vel
+/r1/fukuro/strategy/goal
+/r2/fukuro/strategy/goal
+/r3/fukuro/strategy/goal
+```
+
+Services per robot:
+
+```text
+/r1/fukuro/controller/dribbler
+/r2/fukuro/controller/dribbler
+/r3/fukuro/controller/dribbler
+/r1/fukuro/controller/kick
+/r2/fukuro/controller/kick
+/r3/fukuro/controller/kick
+/r1/fukuro/strategy/set_ready
+/r2/fukuro/strategy/set_ready
+/r3/fukuro/strategy/set_ready
+```
 
 ## Troubleshooting
 
-### Pygame tidak terinstall
+### Base Station command masuk tapi simulator tidak berubah
+
+Pastikan Base Station terkoneksi ke `8081/8082/8083`:
+
 ```bash
-pip install pygame
+ss -tnp state established | grep -E '8081|8082|8083'
 ```
 
-### Topic tidak muncul
-Pastikan ROS2 environment sudah di-source:
+Jika tidak ada koneksi, command hanya berhenti di UI Base Station.
+
+### `/r2/fukuro/comms/base_station` kosong
+
+Topic ini hanya berisi **data yang dikirim Base Station ke simulator**. Jika `friendly_robots`, `enemy_robots`, atau `active_obstacles` kosong, berarti Base Station belum mengisi field tersebut di `Protobuf_From_BS` atau belum menerima telemetry cukup dari robot lain.
+
+### Behavior tree tetap idle di standalone
+
+Panggil:
+
 ```bash
-source ~/ros2_fukuro_strategy/install/setup.bash
+ros2 service call /fukuro/strategy/change fukuro_interface/srv/StrategyChange "{new_strategy: 'playing'}"
 ```
 
-### Simulator lag atau lambat
-- Tutup aplikasi lain yang berat
-- Kurangi jumlah obstacle aktif
-- Pastikan driver grafis terinstall dengan benar
+### Pygame tidak muncul
 
-## Lisensi
+Pastikan environment desktop tersedia. Untuk smoke test headless:
 
-MIT License
-
-## Maintainer
-
-- shluf (luthfisalis09@gmail.com)
-
-## Dependencies
-
-- rclpy
-- geometry_msgs
-- std_msgs
-- fukuro_interface
-- pygame
-- numpy
+```bash
+SDL_VIDEODRIVER=dummy ros2 run fukuro_sim2d simulation --ros-args -p sim_mode:=nasional
+```
